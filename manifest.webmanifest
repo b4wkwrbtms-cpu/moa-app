@@ -1,0 +1,15 @@
+{
+  "name": "모아상점",
+  "short_name": "모아상점",
+  "description": "프랜차이즈 가맹점 전용 박스 단위 주문몰",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F2F1EA",
+  "theme_color": "#F2F1EA",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
