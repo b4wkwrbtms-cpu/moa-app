@@ -500,6 +500,129 @@ img { max-width: 100%; display: block; }
   .stackcol { width: 72px; }
 }
 
+
+/* ---------- 주문 단계 색 (예전 앱의 옅은 색 + 읽히는 진한 글자) ---------- */
+.st-pay { background: #FFF0DE; color: #8A5A1C; }
+.st-paid { background: #EDF1FB; color: #3F5287; }
+.st-ship { background: #E6F1E3; color: #3D5E31; }
+
+/* ---------- 점주: 상품 카드에서 바로 담기 ---------- */
+.shopgrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s5); align-items: start; }
+.stack.s5 { gap: var(--s5); }
+.minicart { display: none; }
+@media (min-width: 1024px) {
+  .shopgrid { grid-template-columns: minmax(0, 1fr) 320px; }
+  .minicart { display: grid; gap: var(--s3); background: var(--surface); border-radius: var(--r20); padding: var(--s5); position: sticky; top: calc(var(--header-h) + var(--s4)); max-height: calc(100vh - var(--header-h) - var(--s8)); overflow-y: auto; }
+  .minicart h2 { font-size: var(--t16); font-weight: 800; }
+}
+.mclines { display: grid; }
+.mcl { display: grid; gap: var(--s2); padding: var(--s3) 0; border-bottom: 1px solid var(--line); }
+.mcl .nm { font-weight: 600; font-size: var(--t14); }
+.mcl .stepper button { width: 30px; height: 30px; font-size: var(--t16); }
+.mcl .stepper input { width: 32px; height: 30px; font-size: var(--t14); }
+.recard { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; background: var(--surface); border-radius: var(--r16); padding: var(--s4) var(--s5); border: 1px dashed var(--line); }
+.pgrid { display: grid; grid-template-columns: 1fr; gap: var(--s2); }
+.pcard { background: var(--surface); border-radius: var(--r16); padding: var(--s3); display: grid; grid-template-columns: 76px minmax(0, 1fr); grid-template-areas: "thumb info" "ctl ctl"; gap: var(--s3); min-width: 0; }
+.pcard .pthumb { width: 76px; }
+.pinfo { grid-area: info; display: grid; gap: 2px; align-content: start; min-width: 0; }
+.pinfo > * { grid-area: auto; }
+.pcard > .pthumb { grid-area: thumb; }
+.pinfo .pname { font-size: var(--t15); font-weight: 700; }
+.pinfo .pprice { text-align: left; font-size: var(--t16); }
+.incart { font-size: var(--t12); font-weight: 700; color: #3D5E31; }
+.pctl { grid-area: ctl; display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
+.pctl .popt { flex: 1 1 100%; }
+.pctl .popt .select { width: 100%; min-height: 40px; }
+.pctl .padd { flex: 1 1 auto; min-height: 46px; background: #FFF5EE; color: #A9461A; border-color: #F0D5C7; }
+.pctl .padd:hover { opacity: 1; border-color: var(--accent); }
+@media (min-width: 768px) {
+  .pgrid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--s3); }
+  .pcard { grid-template-columns: minmax(0, 1fr); grid-template-areas: "thumb" "info" "ctl"; padding: var(--s3) var(--s3) var(--s4); border-radius: var(--r20); }
+  .pcard .pthumb { width: 100%; aspect-ratio: 4 / 3; }
+  .pcard .pthumb svg { width: 52%; }
+  .pcard:hover .pthumb svg, .pcard:hover .pthumb img { transform: scale(1.03); }
+}
+@media (max-width: 767px) { .pcard .spec { display: none; } }
+.cartbar { display: flex; position: fixed; left: 0; right: 0; bottom: calc(57px + env(safe-area-inset-bottom, 0px)); z-index: 44; background: rgba(255, 255, 255, 0.94); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border-top: 1px solid var(--line); padding: var(--s3) var(--s4); gap: var(--s3); align-items: center; justify-content: space-between; }
+.cartbar .tot { font-size: var(--t20); font-weight: 900; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.cbadge { background: var(--accent); color: var(--on-dark); border-radius: var(--rpill); font-size: var(--t12); padding: 0 6px; line-height: 18px; }
+.has-cartbar { padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
+@media (min-width: 768px) { .cartbar { bottom: 0; padding-bottom: calc(var(--s3) + env(safe-area-inset-bottom, 0px)); } .has-cartbar { padding-bottom: 110px; } }
+@media (min-width: 1024px) { .cartbar { display: none; } .has-cartbar { padding-bottom: var(--s16); } }
+.freeship { display: grid; gap: 6px; }
+.freeship .meter { height: 6px; border-radius: var(--rpill); background: var(--track); overflow: hidden; }
+.freeship .meter i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+.freeship.done .meter i { background: #3D5E31; }
+.freeship.done span:first-child { color: #3D5E31; font-weight: 700; }
+
+/* ---------- 주문 진행·상세 ---------- */
+.olink { background: none; border: 0; padding: 0; font: inherit; font-weight: 800; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line); color: var(--text); text-align: left; }
+.olink:hover { text-decoration-color: var(--text); }
+.osum { display: flex; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; font-size: var(--t14); }
+.msteps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.msteps i { height: 4px; border-radius: var(--rpill); background: var(--track); }
+.msteps i.on { background: #3D5E31; }
+.progress { background: #F0F4EC; color: #2F4824; border-radius: var(--r16); padding: var(--s4) var(--s5); display: grid; gap: var(--s4); }
+.progress b { font-size: var(--t16); }
+.progress.off { background: var(--danger-bg); color: var(--danger); gap: var(--s1); }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, 1fr); }
+.steps li { position: relative; display: grid; justify-items: center; gap: 4px; text-align: center; font-size: var(--t12); color: #6E7F63; }
+.steps li::before { content: ""; position: absolute; top: 13px; left: -50%; width: 100%; height: 2px; background: #CFDCC6; z-index: 0; }
+.steps li:first-child::before { display: none; }
+.steps li.done::before, .steps li.on::before { background: #3D5E31; }
+.steps li i { position: relative; z-index: 1; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-weight: 800; background: var(--surface); border: 1.5px solid #CFDCC6; }
+.steps li.done i { background: #3D5E31; border-color: #3D5E31; color: #fff; }
+.steps li.on i { background: var(--text); border-color: var(--text); color: #fff; }
+.steps li.on span { color: var(--text); font-weight: 800; }
+.odetail { display: grid; gap: var(--s4); }
+.ohead { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--s3); flex-wrap: wrap; }
+.ohead h2 { font-size: var(--t24); font-weight: 900; letter-spacing: -0.02em; }
+.dblock { display: grid; gap: var(--s2); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.dblock > h3 { font-size: var(--t14); font-weight: 800; }
+.addr { font-size: var(--t14); line-height: 1.7; }
+.hist { list-style: none; margin: var(--s2) 0 0; padding: 0; display: grid; gap: var(--s2); }
+.hist li { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: var(--s2); font-size: var(--t13); }
+.trackline.compact .no { font-size: var(--t16); }
+.sumline.off { opacity: 0.6; }
+.review { display: grid; gap: var(--s2); padding-bottom: var(--s2); border-bottom: 1px solid var(--line); }
+.terms summary { font-size: var(--t13); color: var(--text-mid); min-height: 36px; display: flex; align-items: center; }
+.terms .legal { max-height: 200px; overflow-y: auto; background: var(--field); border-radius: var(--r12); padding: var(--s3); margin-top: var(--s2); }
+
+/* ---------- 운영: 주문·배송 ---------- */
+.kpis .kpi { background: var(--surface); border: 1.5px solid transparent; border-radius: var(--r16); padding: var(--s4); text-align: left; display: grid; gap: 2px; cursor: pointer; font: inherit; color: inherit; }
+.kpis .kpi b { font-size: var(--t24); font-weight: 900; font-variant-numeric: tabular-nums; }
+.kpis .kpi b small { font-size: var(--t13); font-weight: 700; margin-left: 2px; }
+.kpis .kpi.on, .kpis .kpi:hover { border-color: var(--text); }
+@media (max-width: 767px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .kpis .kpi { padding: var(--s3); } }
+.search.grow { flex: 1 1 260px; }
+.search.grow input { min-height: 44px; }
+.bulkbar { position: sticky; bottom: calc(var(--s3) + env(safe-area-inset-bottom, 0px)); z-index: 30; background: var(--text); color: var(--on-dark); border-radius: var(--r16); padding: var(--s3) var(--s4); display: flex; justify-content: space-between; align-items: center; gap: var(--s3); flex-wrap: wrap; box-shadow: 0 8px 24px rgba(15, 16, 19, 0.18); }
+.bulkbar .btn { background: var(--surface); color: var(--text); border-color: var(--surface); }
+.bulkbar .btn.secondary { background: transparent; color: var(--on-dark); border-color: rgba(255, 255, 255, 0.4); }
+.bulkbar .textbtn { color: var(--on-dark); }
+.tbl th.ck, .tbl td.ck { width: 32px; padding-right: 0; }
+.tbl td.ck input, .tbl th.ck input { width: 18px; height: 18px; accent-color: var(--text); }
+.tbl tr.sel td { background: var(--field); }
+@media (max-width: 767px) {
+  .tablewrap:has(.rtable) { background: none; padding: 0; overflow: visible; }
+  .rtable thead { display: none; }
+  .rtable, .rtable tbody { display: grid; gap: var(--s2); }
+  .rtable tr { display: grid; grid-template-columns: 1fr; background: var(--surface); border-radius: var(--r16); padding: var(--s3) var(--s4); position: relative; }
+  .rtable td { border: 0; padding: var(--s1) 0 var(--s1) 72px; display: block; position: relative; text-align: left !important; white-space: normal !important; min-height: 28px; }
+  .rtable td::before { content: attr(data-label); position: absolute; left: 0; top: var(--s1); width: 64px; font-size: var(--t12); color: var(--text-sub); font-weight: 600; padding-top: 2px; }
+  .rtable td:nth-child(2) { padding-right: 32px; }
+  .rtable td.ck { position: absolute; top: var(--s2); right: var(--s2); display: block; width: auto; padding: var(--s2); z-index: 2; min-height: 0; }
+  .rtable td.ck::before { content: none; }
+  .rtable .cell-actions .sm-input { width: 100%; flex: 1 1 120px; }
+  .rtable .cell-actions form.row { width: 100%; flex-wrap: nowrap; }
+}
+
+/* ---------- 운영: 페이백 지급 3단계 ---------- */
+.steps3 { display: grid; gap: var(--s3); }
+.stepno { width: 28px; height: 28px; border-radius: 50%; background: var(--text); color: var(--on-dark); display: grid; place-items: center; font-weight: 800; font-size: var(--t13); }
+.payline { display: grid; gap: 2px; background: var(--field); border-radius: var(--r12); padding: var(--s3) var(--s4); }
+.payline b { font-size: var(--t32); font-weight: 900; letter-spacing: -0.03em; }
+
 /* ---------- 저장 중 표시 ---------- */
 .busybar { position: fixed; left: 0; right: 0; top: 0; height: 3px; z-index: 99; background: var(--track); overflow: hidden; }
 .busybar::after { content: ""; position: absolute; top: 0; bottom: 0; width: 30%; background: var(--accent); animation: busy 1s ease-in-out infinite; }
@@ -596,6 +719,7 @@ function dbIndex(db) {
     items: groupBy(db.order_items, 'order_id'), refunds: groupBy(db.refunds, 'order_id'),
     shipments: new Map(db.shipments.map((s) => [s.order_id, s])), stores: new Map(db.stores.map((s) => [s.id, s])),
     brands: new Map(db.brands.map((b) => [b.id, b])), orders: new Map(db.orders.map((o) => [o.id, o])),
+    events: groupBy(db.order_events || [], 'order_id'), tax: new Map((db.tax_invoices || []).map((t) => [t.order_id, t])),
   }));
 }
 const itemsOf = (db, oid) => dbIndex(db).items.get(oid) || [];
@@ -721,7 +845,31 @@ function paybackRuleAt(db, brandId, iso) {
 
 const FOOTER_DEFAULT = { company: '', ceo: '', biz_no: '', address: '', contact: '', terms: '', privacy: '' };
 const READ_METHODS = new Set(['me', 'listBrands', 'getInvite', 'listMemberships', 'listStores', 'listCategories', 'listProducts', 'listOrders', 'getOrder',
-  'listNotices', 'salesReport', 'boxesReport', 'listPaybackRules', 'currentPaybackRule', 'settlement', 'auditLogs', 'getSettings', 'getDevSettings', 'publicInfo']);
+  'listNotices', 'salesReport', 'boxesReport', 'listPaybackRules', 'currentPaybackRule', 'settlement', 'auditLogs', 'getSettings', 'getDevSettings', 'publicInfo',
+  'listTaxInvoices', 'getBrandAccount', 'listPayouts', 'shippingFor']);
+/** 주문 단계 (화면 표시 순서) */
+const ORDER_STEPS = ['pending_payment', 'paid', 'preparing', 'shipped', 'delivered'];
+const STATUS_EVENT = { paid: '결제 확인', preparing: '배송 준비 시작', shipped: '배송 시작', delivered: '배송 완료', cancelled: '주문 취소', refunded: '취소·환불' };
+/** 배송비: 무료배송 기준 이상이면 0 */
+function shippingFee(settings, goods) { const over = Number(settings.free_shipping_over) || 0; return over > 0 && goods >= over ? 0 : Number(settings.shipping_fee) || 0; }
+/** 받는 곳 정리·검사 (서버 place_order 와 같은 규칙) */
+function cleanShipTo(t) {
+  const g = (k, max = 200) => String((t || {})[k] ?? '').trim().slice(0, max);
+  const s = { name: g('name'), phone: g('phone'), zip: g('zip'), addr1: g('addr1'), addr2: g('addr2'), memo: g('memo') };
+  if (!s.name) bad('받는 분을 입력해 주세요.'); if (!s.phone) bad('연락처를 입력해 주세요.'); if (!s.addr1) bad('배송 주소를 입력해 주세요.');
+  return s;
+}
+/** 세금계산서 받는 사업자 정리·검사 */
+function cleanBuyer(b) {
+  const g = (k, max = 200) => String((b || {})[k] ?? '').trim().slice(0, max);
+  const biz = g('biz_no', 40).replace(/[^0-9]/g, '');
+  if (biz.length !== 10) bad('사업자등록번호 10자리를 확인해 주세요.');
+  const out = { biz_no: biz, company: g('company'), ceo: g('ceo'), address: g('address'), biz_type: g('biz_type', 100), biz_item: g('biz_item', 100), email: g('email'), memo: g('memo', 500) };
+  if (!out.company || !out.ceo || !out.address) bad('상호·대표자·사업장 주소를 입력해 주세요.');
+  if (out.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(out.email)) bad('받을 이메일 주소를 확인해 주세요.');
+  return out;
+}
+const fmtBizNo = (v) => { const d = String(v || '').replace(/[^0-9]/g, ''); return d.length === 10 ? `${d.slice(0, 3)}-${d.slice(3, 5)}-${d.slice(5)}` : String(v || ''); };
 
 /* ---------- 시드 데이터 ---------- */
 const SHEET_PRODUCTS = [
@@ -788,7 +936,7 @@ function seed(nowMs = Date.now()) {
       .concat([{ id: 'p_virtual', category_id: 'c_main', name: '가상 테스트 상품', pack_qty: null, active: false, is_virtual: true, img: 'box' }]),
     product_options: [],
     brand_prices: SHEET_PRODUCTS.map(([pid, , , price]) => ({ id: 'bp_' + pid, brand_id: 'b_hct', product_id: pid, price, effective_from: '2026-07-01', created_at: now, created_by: 'u_op' })),
-    orders: [], order_items: [], refunds: [], shipments: [], notices: [],
+    orders: [], order_items: [], refunds: [], shipments: [], notices: [], order_events: [], tax_invoices: [], brand_accounts: [], payback_payouts: [],
     payback_rules: [{
       id: 'pr_hct_2607', brand_id: 'b_hct', method: 'B', rate: null, effective_from: '2026-07', created_at: now, created_by: 'u_op',
       per_box: Object.fromEntries(SHEET_PRODUCTS.map(([pid, , , , pb]) => [pid, pb])),
@@ -799,6 +947,7 @@ function seed(nowMs = Date.now()) {
       revenue: { basis: 'paid', include_shipping: true, include_discount: true, price_includes_vat: true },
       payback_vat: true,
       shipping_fee: 0,
+      free_shipping_over: 0,
       carriers: [],
       site_url: '',
       invite_ttl_hours: 24,
@@ -871,7 +1020,12 @@ function makeApi(db, uid, clock = () => Date.now()) {
   const orderView = (o) => { const ix = dbIndex(db); const items = ix.items.get(o.id) || [];
     return { ...o, brand_name: brandName(o.brand_id), store_name: (ix.stores.get(o.store_id) || {}).name || '-',
       items, shipment: ix.shipments.get(o.id) || null, refunds: ix.refunds.get(o.id) || [],
+      events: (ix.events.get(o.id) || []).slice().sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)), tax_invoice: ix.tax.get(o.id) || null,
       total: items.reduce((s, i) => s + i.unit_price * i.qty_boxes, 0) + (o.shipping_fee || 0) - (o.discount || 0) }; };
+  const orderTotalOf = (o) => itemsOf(db, o.id).reduce((s, i) => s + i.unit_price * i.qty_boxes, 0) + (o.shipping_fee || 0) - (o.discount || 0);
+  const logEvent = (oid, kind, text) => { if (!db.order_events) db.order_events = []; db.order_events.push({ id: nextId('ev'), order_id: oid, at: nowISO(), user_id: uid, kind, text }); };
+  const setStatus = (o, to) => { if (o.status === to) return; o.status = to; if (STATUS_EVENT[to]) logEvent(o.id, 'status', STATUS_EVENT[to]); };
+  const findOrder = (oid) => { const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.'); return o; };
   const isClosed = (bid, month, virtual) => !!findClosing(db, bid, month, virtual);
 
   const api = {
@@ -1011,15 +1165,17 @@ function makeApi(db, uid, clock = () => Date.now()) {
     },
 
     /* 주문 */
-    placeOrder(lines, payMethod) {
+    placeOrder(lines, payMethod, shipTo, clientKey) {
       if (role !== 'owner' || !ownerOk) deny('승인된 점주만 주문할 수 있습니다.');
       if (!['card', 'bank'].includes(payMethod)) bad('결제 방식을 선택해 주세요.');
       if (!Array.isArray(lines) || !lines.length) bad('담긴 상품이 없습니다.');
+      if (clientKey) { const dup = db.orders.find((x) => x.user_id === uid && x.client_key === clientKey); if (dup) return { ...orderView(dup), duplicate: true }; }
+      const ship_to = cleanShipTo(shipTo);
       const at = nowISO(); const rule = paybackRuleAt(db, myBrand, at);
       const o = { id: nextId('o'), no: 'MO-' + kstDay(at).replace(/-/g, '').slice(2) + '-' + String(db.seq).slice(-4), brand_id: myBrand, store_id: myStore, user_id: uid,
         created_at: at, paid_at: payMethod === 'card' ? at : null, shipped_at: null, delivered_at: null,
         status: payMethod === 'card' ? 'paid' : 'pending_payment', pay_method: payMethod,
-        shipping_fee: db.settings.shipping_fee || 0, discount: 0, payback: rule ? { method: rule.method, rate: rule.rate, rule_id: rule.id } : null };
+        shipping_fee: 0, discount: 0, payback: rule ? { method: rule.method, rate: rule.rate, rule_id: rule.id } : null, ship_to, client_key: clientKey || null };
       const items = [];
       for (const ln of lines) {
         const p = db.products.find((x) => x.id === ln.product_id && x.active && !x.is_virtual); if (!p) bad('판매하지 않는 상품이 있습니다.');
@@ -1031,8 +1187,18 @@ function makeApi(db, uid, clock = () => Date.now()) {
           unit_price: price.price, pack_qty: p.pack_qty, qty_boxes: qty,
           payback_per_box: rule && rule.method === 'B' ? (rule.per_box[p.id] ?? null) : null });
       }
+      o.shipping_fee = shippingFee(db.settings, items.reduce((s, i) => s + i.unit_price * i.qty_boxes, 0));
       db.orders.push(o); db.order_items.push(...items);
+      logEvent(o.id, 'placed', o.status === 'paid' ? '주문 접수 · 결제 완료' : '주문 접수 · 입금 대기');
       return orderView(o);
+    },
+    /** 배송비 미리 계산 (장바구니·주문서) */
+    shippingFor(goods) { return { fee: shippingFee(db.settings, goods), over: Number(db.settings.free_shipping_over) || 0, base: Number(db.settings.shipping_fee) || 0 }; },
+    cancelMyOrder(oid) {
+      const o = db.orders.find((x) => x.id === oid);
+      if (role !== 'owner' || !ownerOk || !o || o.store_id !== myStore) deny('우리 매장 주문만 취소할 수 있습니다.');
+      if (o.status !== 'pending_payment') bad('입금 전 주문만 직접 취소할 수 있습니다. 운영자에게 문의해 주세요.');
+      setStatus(o, 'cancelled'); audit('점주 주문 취소', o.no, '입금 전 취소');
     },
     listOrders(filter = {}) {
       if (isStaff) {
@@ -1050,7 +1216,7 @@ function makeApi(db, uid, clock = () => Date.now()) {
     },
     confirmPayment(oid) {
       needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o || o.status !== 'pending_payment') bad('입금 대기 주문이 아닙니다.');
-      o.paid_at = nowISO(); o.status = 'paid'; audit('입금 확인', o.no, fmtExact(orderView(o).total));
+      o.paid_at = nowISO(); setStatus(o, 'paid'); audit('입금 확인', o.no, fmtExact(orderView(o).total));
     },
     setDiscount(oid, amount) {
       needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.');
@@ -1059,16 +1225,39 @@ function makeApi(db, uid, clock = () => Date.now()) {
     },
     ship(oid, carrier, tracking) {
       needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.');
-      if (!['paid', 'shipped'].includes(o.status)) bad('결제 완료된 주문만 송장을 넣을 수 있습니다.');
+      if (!['paid', 'preparing', 'shipped'].includes(o.status)) bad('결제 확인 후, 배송 완료 전 주문만 송장을 넣을 수 있습니다.');
       carrier = String(carrier || '').trim(); tracking = String(tracking || '').trim();
       if (!carrier || !tracking) bad('택배사와 송장번호를 모두 입력해 주세요.');
       const s = db.shipments.find((x) => x.order_id === oid);
-      if (s) Object.assign(s, { carrier, tracking_no: tracking, updated_at: nowISO() });
-      else db.shipments.push({ id: nextId('sh'), order_id: oid, carrier, tracking_no: tracking, created_at: nowISO() });
-      if (!o.shipped_at) o.shipped_at = nowISO(); o.status = 'shipped';
+      if (s) { if (s.carrier !== carrier || s.tracking_no !== tracking) logEvent(oid, 'tracking', `송장 수정 · ${carrier} ${tracking}`); Object.assign(s, { carrier, tracking_no: tracking, updated_at: nowISO() }); }
+      else { db.shipments.push({ id: nextId('sh'), order_id: oid, carrier, tracking_no: tracking, created_at: nowISO() }); logEvent(oid, 'tracking', `송장 등록 · ${carrier} ${tracking}`); }
+      if (!o.shipped_at) o.shipped_at = nowISO(); setStatus(o, 'shipped');
       audit('송장 입력', o.no, `${carrier} ${tracking}`);
     },
-    deliver(oid) { needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o || o.status !== 'shipped') bad('배송 중인 주문이 아닙니다.'); o.delivered_at = nowISO(); o.status = 'delivered'; },
+    deliver(oid) { needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o || o.status !== 'shipped') bad('배송 중인 주문이 아닙니다.'); o.delivered_at = nowISO(); setStatus(o, 'delivered'); },
+    /** 여러 주문 단계 한 번에: 입금 확인(paid) · 배송 준비(preparing) · 배송 완료(delivered) */
+    bulkStatus(ids, to) {
+      needStaff(); const from = { paid: 'pending_payment', preparing: 'paid', delivered: 'shipped' }[to];
+      if (!from) bad('바꿀 수 없는 단계입니다.');
+      let changed = 0;
+      for (const id of ids || []) { const o = db.orders.find((x) => x.id === id && !x.is_virtual); if (!o || o.status !== from) continue;
+        o[{ paid: 'paid_at', preparing: 'preparing_at', delivered: 'delivered_at' }[to]] = nowISO(); setStatus(o, to); changed++; }
+      audit('주문 단계 일괄 변경', `${changed}건`, STATUS_EVENT[to]);
+      return { changed, skipped: (ids || []).length - changed };
+    },
+    /** 송장 여러 건: 줄마다 저장하고 안 되는 줄은 이유를 돌려준다 */
+    bulkShip(rows) {
+      needStaff(); const out = [];
+      for (const r of rows || []) {
+        const no = String(r.no || '').trim();
+        try {
+          const o = db.orders.find((x) => x.no === no && !x.is_virtual); if (!o) bad('주문번호를 찾을 수 없습니다.');
+          api.ship(o.id, r.carrier, r.tracking_no); out.push({ no, ok: true });
+        } catch (e) { if (!(e instanceof ApiError) || e.code === 'FORBIDDEN') throw e; out.push({ no, ok: false, error: e.message }); }
+      }
+      audit('송장 일괄 입력', `${out.length}건`, `${out.filter((x) => x.ok).length}건 저장`);
+      return out;
+    },
     cancelOrder(oid, reason) {
       needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.');
       if (o.status === 'cancelled' || o.status === 'refunded') bad('이미 취소된 주문입니다.');
@@ -1077,9 +1266,9 @@ function makeApi(db, uid, clock = () => Date.now()) {
         const origMonth = kstMonth(o[EVENT_FIELD[db.settings.revenue.basis]]);
         const closed = isClosed(o.brand_id, origMonth, o.is_virtual);
         db.refunds.push({ id: nextId('rf'), order_id: oid, created_at: nowISO(), full: true, lines: [], reason: reason || '', adjust_month: closed ? kstMonth(nowISO()) : null });
-        o.status = 'refunded';
+        setStatus(o, 'refunded');
         audit('주문 취소·환불', o.no, closed ? `원 주문월(${origMonth}) 마감 → ${kstMonth(nowISO())} 조정으로 차감` : `원 주문월 ${origMonth}에서 차감`);
-      } else { o.status = 'cancelled'; audit('주문 취소', o.no, '결제 전 취소'); }
+      } else { setStatus(o, 'cancelled'); audit('주문 취소', o.no, '결제 전 취소'); }
     },
 
     /* 공지 */
@@ -1143,14 +1332,88 @@ function makeApi(db, uid, clock = () => Date.now()) {
       audit('월 마감', `${brandName(bid)} · ${month}${virtual ? ' (가상)' : ''}`, `매출 ${fmtExact(snap.amount)}, 페이백 ${fmtExact(snap.payback)}`);
     },
 
+    /* 세금계산서: 계좌이체 주문만 (카드는 매출전표가 증빙) */
+    listTaxInvoices() {
+      const rows = (db.tax_invoices || []).filter((t) => isStaff || (role === 'owner' && ownerOk && t.store_id === myStore));
+      if (!isStaff && !(role === 'owner' && ownerOk)) deny('세금계산서는 해당 가맹점과 운영자만 볼 수 있습니다.');
+      const ix = dbIndex(db);
+      return rows.map((t) => { const o = ix.orders.get(t.order_id) || {}; return { ...t, order_no: o.no, store_name: (ix.stores.get(t.store_id) || {}).name || '-', brand_name: brandName(t.brand_id), order_created_at: o.created_at }; })
+        .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+    },
+    requestTaxInvoice(oid, buyer) {
+      const o = db.orders.find((x) => x.id === oid);
+      if (role !== 'owner' || !ownerOk || !o || o.store_id !== myStore) deny('우리 매장 주문만 신청할 수 있습니다.');
+      if (o.pay_method === 'card') bad('카드 결제 주문은 카드 매출전표가 증빙입니다. 세금계산서는 계좌이체 주문에서 신청해 주세요.');
+      if (o.pay_method !== 'bank') bad('이 주문은 세금계산서를 신청할 수 없습니다.');
+      if (!['paid', 'preparing', 'shipped', 'delivered'].includes(o.status)) bad('입금이 확인된 주문에서 신청할 수 있습니다.');
+      const b = cleanBuyer(buyer);
+      if (!db.tax_invoices) db.tax_invoices = [];
+      let t = db.tax_invoices.find((x) => x.order_id === oid);
+      if (t && t.status === 'issued') bad('이미 발행 기록이 있는 주문입니다.');
+      if (!t) { t = { id: nextId('tx'), order_id: oid, store_id: o.store_id, brand_id: o.brand_id, created_at: nowISO(), requested_by: uid }; db.tax_invoices.push(t); }
+      Object.assign(t, { buyer: b, order_total: orderTotalOf(o), status: 'requested', note: null, updated_at: nowISO() });
+      audit('세금계산서 신청', o.no, b.company);
+      return t;
+    },
+    returnTaxInvoice(oid, note) {
+      needStaff(); note = String(note || '').trim(); if (!note) bad('보완할 내용을 적어 주세요.');
+      const t = (db.tax_invoices || []).find((x) => x.order_id === oid); if (!t) bad('신청 내역이 없습니다.');
+      if (t.status !== 'requested') bad('발행 요청 상태에서만 보완 요청할 수 있습니다.');
+      Object.assign(t, { status: 'returned', note, updated_at: nowISO() }); audit('세금계산서 보완 요청', (db.orders.find((x) => x.id === oid) || {}).no, note);
+    },
+    issueTaxInvoice(oid, f) {
+      needStaff(); const t = (db.tax_invoices || []).find((x) => x.order_id === oid); if (!t) bad('신청 내역이 없습니다.');
+      if (t.status !== 'requested') bad('발행 요청 상태에서만 발행 기록을 남길 수 있습니다.');
+      const ap = String(f.approval || '').replace(/[\s-]/g, '').toUpperCase();
+      if (!/^[A-Z0-9]{24}$/.test(ap)) bad('승인번호 24자리를 확인해 주세요.');
+      const o = findOrder(oid); const tot = orderTotalOf(o);
+      const supply = Math.round(Number(f.supply)), tax = Math.round(Number(f.tax));
+      if (!Number.isFinite(supply) || !Number.isFinite(tax) || supply < 0 || tax < 0 || supply + tax !== tot) bad(`공급가액과 세액의 합이 주문 금액(${tot}원)과 같아야 합니다.`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) bad('발행일을 넣어 주세요.');
+      Object.assign(t, { status: 'issued', approval_no: ap, supply_amount: supply, tax_amount: tax, issued_date: f.date, order_total: tot, issued_by: uid, note: null, updated_at: nowISO() });
+      audit('세금계산서 발행 기록', o.no, ap);
+    },
+
+    /* 페이백 이체: 수취계좌 → 마감월 선택 → 이체 기록 (송금은 은행에서 직접) */
+    getBrandAccount(bid) { needBrandRead(bid); return (db.brand_accounts || []).find((a) => a.brand_id === bid) || null; },
+    setBrandAccount(bid, acc) {
+      needStaff(); if (!db.brands.some((b) => b.id === bid)) bad('브랜드가 없습니다.');
+      const row = { bank: String(acc.bank || '').trim(), account_no: String(acc.account_no || '').trim(), holder: String(acc.holder || '').trim() };
+      if (!row.bank || !row.account_no || !row.holder) bad('은행·계좌번호·예금주를 모두 입력해 주세요.');
+      if (!db.brand_accounts) db.brand_accounts = [];
+      const cur = db.brand_accounts.find((a) => a.brand_id === bid);
+      if (cur) Object.assign(cur, row, { updated_at: nowISO(), updated_by: uid }); else db.brand_accounts.push({ brand_id: bid, ...row, updated_at: nowISO(), updated_by: uid });
+      audit('수취계좌 저장', brandName(bid), `${row.bank} ${row.account_no} ${row.holder}`);
+    },
+    listPayouts(bid) {
+      if (bid) needBrandRead(bid); else needStaff();
+      return (db.payback_payouts || []).filter((p) => (!bid || p.brand_id === bid) && !p.is_virtual).map((p) => ({ ...p, brand_name: brandName(p.brand_id) }))
+        .sort((a, b) => (a.month < b.month ? 1 : -1));
+    },
+    recordPayout(bid, month, f) {
+      needStaff();
+      const c = findClosing(db, bid, month, false); if (!c) bad('마감한 달만 이체를 기록할 수 있습니다. 먼저 월 마감을 해 주세요.');
+      const acc = (db.brand_accounts || []).find((a) => a.brand_id === bid); if (!acc) bad('브랜드 수취계좌를 먼저 등록해 주세요.');
+      if ((db.payback_payouts || []).some((p) => p.brand_id === bid && p.month === month && !p.is_virtual)) bad('이미 이체를 기록한 달입니다.');
+      const payback = c.snapshot.payback || 0, vat = c.snapshot.payback_vat || 0;
+      if (payback + vat <= 0) bad('지급할 페이백이 없습니다. (0원 이하는 다음 달 정산에서 조정됩니다)');
+      if (!f || !f.at || Number.isNaN(new Date(f.at).getTime())) bad('이체한 시각을 넣어 주세요.');
+      if (!db.payback_payouts) db.payback_payouts = [];
+      const row = { id: nextId('po'), brand_id: bid, month, is_virtual: false, payback, vat, total: payback + vat, account: { bank: acc.bank, account_no: acc.account_no, holder: acc.holder },
+        transfer_ref: String(f.ref || '').trim() || null, transferred_at: new Date(f.at).toISOString(), memo: String(f.memo || '').trim() || null, created_by: uid, created_at: nowISO() };
+      db.payback_payouts.push(row);
+      audit('페이백 이체 기록', `${brandName(bid)} · ${month}`, fmtExact(row.total));
+      return row;
+    },
+
     /* 기록·설정 */
     auditLogs() { needStaff(); return db.audit_logs; },
-    publicInfo() { return { footer: { ...FOOTER_DEFAULT, ...(db.settings.footer || {}) }, site_url: db.settings.site_url }; },
+    publicInfo() { return { footer: { ...FOOTER_DEFAULT, ...(db.settings.footer || {}) }, site_url: db.settings.site_url, bank_account: db.settings.bank_account || '' }; },
     getSettings() { needStaff(); return db.settings; },
     saveSettings(patch) {
       needStaff(); const before = JSON.stringify(db.settings);
       if (patch.revenue) Object.assign(db.settings.revenue, patch.revenue);
-      for (const k of ['payback_vat', 'shipping_fee', 'carriers', 'site_url', 'bank_account', 'approval_fields', 'footer']) if (k in patch) db.settings[k] = patch[k];
+      for (const k of ['payback_vat', 'shipping_fee', 'free_shipping_over', 'carriers', 'site_url', 'bank_account', 'approval_fields', 'footer']) if (k in patch) db.settings[k] = patch[k];
       if (before !== JSON.stringify(db.settings)) audit('설정 변경', '운영 설정', Object.keys(patch).join(', '));
     },
     getDevSettings() { if (!isDev) deny('서버·배포·보안 설정은 개발자만 볼 수 있습니다.'); return db.dev_settings; },
@@ -1167,10 +1430,10 @@ function makeApi(db, uid, clock = () => Date.now()) {
 
 /* ---------- 메뉴: 역할별 화면 분리 ---------- */
 const NAV = {
-  developer: ['home', 'sales', 'boxes', 'payback', 'approvals', 'brands', 'orders', 'notices', 'products', 'prices', 'audit', 'settings', 'qa', 'design', 'devsettings'],
-  operator: ['home', 'sales', 'boxes', 'payback', 'approvals', 'brands', 'orders', 'notices', 'products', 'prices', 'audit', 'settings'],
+  developer: ['home', 'sales', 'boxes', 'payback', 'payouts', 'approvals', 'brands', 'orders', 'taxinvoices', 'notices', 'products', 'prices', 'audit', 'settings', 'qa', 'design', 'devsettings'],
+  operator: ['home', 'sales', 'boxes', 'payback', 'payouts', 'approvals', 'brands', 'orders', 'taxinvoices', 'notices', 'products', 'prices', 'audit', 'settings'],
   admin: ['home', 'sales'],
-  owner: ['shop', 'cart', 'myorders', 'mynotices'],
+  owner: ['shop', 'cart', 'checkout', 'myorders', 'order', 'mytax', 'mynotices'],
 };
 
 /* ---------- 자체 검수 12개 + 추가 검사 ---------- */
@@ -1186,6 +1449,7 @@ function runQA(baseNow = Date.now()) {
   const fresh = () => seed(new Date('2026-10-08T03:00:00Z').getTime());
   const T = clockAt('2026-10-08T03:00:00Z');
   const A = (db, uid, clk = T) => makeApi(db, uid, clk);
+  const SHIP = { name: '김점주', phone: '010-1111-2222', addr1: '경기 김포시 구래동 1', addr2: '1층' };
 
   check('01', '역할별 화면 분리', () => {
     const db = fresh();
@@ -1238,7 +1502,7 @@ function runQA(baseNow = Date.now()) {
     const p2 = A(db, r.user_id); const prods = p2.listProducts();
     expect(prods.length === 15 && prods.every((x) => x.price.brand_id === 'b_hct'), '자기 브랜드 가격만 보여야 함');
     expect(denied(() => p2.listProducts('b_gogi')), '점주가 다른 브랜드 가격을 열 수 있음');
-    const o = p2.placeOrder([{ product_id: 'p01', qty_boxes: 2 }], 'card');
+    const o = p2.placeOrder([{ product_id: 'p01', qty_boxes: 2 }], 'card', SHIP);
     expect(o.total === 118000, '주문 금액 오류');
     const late = A(db, null, clockAt('2026-10-09T04:00:00Z'));
     let expired = false; try { late.applyWithCode(code, info); } catch (e) { expired = /만료/.test(e.message); }
@@ -1269,7 +1533,7 @@ function runQA(baseNow = Date.now()) {
   });
   check('08', '3박스 주문 = 3박스 집계', () => {
     const db = fresh(); db.products.find((p) => p.id === 'p13').pack_qty = 500;
-    const o = A(db, 'u_own').placeOrder([{ product_id: 'p13', qty_boxes: 3 }], 'card');
+    const o = A(db, 'u_own').placeOrder([{ product_id: 'p13', qty_boxes: 3 }], 'card', SHIP);
     expect(o.items[0].qty_boxes === 3 && o.items[0].pack_qty === 500, '주문 수량이 박스로 저장되지 않음');
     const rows = A(db, 'u_op').boxesReport('2026-10', false);
     expect(rows.find((r) => r.brand_id === 'b_hct').boxes.p13 === 3, '집계가 3박스가 아님');
@@ -1285,7 +1549,7 @@ function runQA(baseNow = Date.now()) {
     const again = A(JSON.parse(JSON.stringify(reopened)), 'u_op').listProducts().find((p) => p.id === 'p13').options;
     expect(again.length === 2 && again[0].name === '흑색(대)', '수정·삭제가 유지되지 않음');
     const own = A(reopened, 'u_own');
-    let needOpt = false; try { own.placeOrder([{ product_id: 'p13', qty_boxes: 1 }], 'card'); } catch (e) { needOpt = /옵션/.test(e.message); }
+    let needOpt = false; try { own.placeOrder([{ product_id: 'p13', qty_boxes: 1 }], 'card', SHIP); } catch (e) { needOpt = /옵션/.test(e.message); }
     expect(needOpt, '옵션 없이 주문이 됨');
     return '옵션 3개 저장 → 다시 열기 → 수정·삭제 후에도 유지';
   });
@@ -1304,7 +1568,7 @@ function runQA(baseNow = Date.now()) {
     expect(t('u_qa2') === '전체 공지,힙춘향 공지', '같은 브랜드 다른 매장에 매장 공지가 보임');
     expect(t('u_qa3') === '전체 공지', '다른 브랜드에 브랜드 공지가 보임');
     expect(A(db, 'u_own').listNotices().find((n) => n.title === '구래점 전용').image, '이미지 누락');
-    const o = A(db, 'u_own').placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'card');
+    const o = A(db, 'u_own').placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'card', SHIP);
     op.ship(o.id, '테스트택배', '1234-5678');
     expect(A(db, 'u_own').getOrder(o.id).shipment.tracking_no === '1234-5678', '점주가 자기 송장을 못 봄');
     expect(denied(() => A(db, 'u_qa2').getOrder(o.id)), '같은 브랜드 다른 매장이 주문을 열 수 있음');
@@ -1352,6 +1616,64 @@ function runQA(baseNow = Date.now()) {
   check('+5', '표기 형식', () => {
     expect(fmtWon(155000000) === '1억 5,500만 원', fmtWon(155000000)); expect(fmtBoxes(3, 500) === '3박스 (1,500개)', fmtBoxes(3, 500));
     return '1억 5,500만 원 · 3박스 (1,500개)';
+  });
+  check('+6', '주문서: 배송지 필수 · 무료배송 기준 · 같은 주문서 한 번만', () => {
+    const db = fresh(); db.settings.shipping_fee = 3000; db.settings.free_shipping_over = 200000; const own = A(db, 'u_own');
+    let need = false; try { own.placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'bank', {}); } catch (e) { need = /받는 분/.test(e.message); }
+    expect(need, '배송지 없이 주문이 됨');
+    const o1 = own.placeOrder([{ product_id: 'p01', qty_boxes: 3 }], 'bank', SHIP, 'k1');
+    expect(o1.shipping_fee === 3000 && o1.total === 180000 && o1.status === 'pending_payment' && o1.ship_to.addr2 === '1층', `배송비·금액 ${o1.shipping_fee} ${o1.total}`);
+    const again = own.placeOrder([{ product_id: 'p01', qty_boxes: 3 }], 'bank', SHIP, 'k1');
+    expect(again.id === o1.id && db.orders.filter((x) => x.client_key === 'k1').length === 1, '같은 주문서가 두 건으로 접수됨');
+    const o2 = own.placeOrder([{ product_id: 'p01', qty_boxes: 4 }], 'card', SHIP, 'k2');
+    expect(o2.shipping_fee === 0, '20만 원 이상인데 배송비가 붙음');
+    expect(denied(() => A(db, 'u_op').cancelMyOrder(o1.id)) && (() => { try { own.cancelMyOrder(o2.id); return false; } catch (e) { return true; } })(), '취소 권한 오류');
+    own.cancelMyOrder(o1.id); expect(own.getOrder(o1.id).status === 'cancelled', '입금 전 점주 취소 안 됨');
+    return '배송지 없으면 거절 · 3박스 177,000 + 배송비 3,000 · 23.6만 원 무료배송 · 두 번 눌러도 1건 · 입금 전 점주 취소';
+  });
+  check('+7', '배송 일괄 처리와 처리 이력', () => {
+    const db = fresh(); const own = A(db, 'u_own'); const op = A(db, 'u_op');
+    const a = own.placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'bank', SHIP); const b = own.placeOrder([{ product_id: 'p03', qty_boxes: 1 }], 'card', SHIP);
+    const r1 = op.bulkStatus([a.id, b.id], 'paid'); expect(r1.changed === 1 && r1.skipped === 1, `입금 확인 ${JSON.stringify(r1)}`);
+    const r2 = op.bulkStatus([a.id, b.id], 'preparing'); expect(r2.changed === 2, `배송 준비 ${JSON.stringify(r2)}`);
+    const res = op.bulkShip([{ no: a.no, carrier: 'CJ대한통운', tracking_no: '6000-1111' }, { no: 'NOPE', carrier: 'CJ', tracking_no: '1' }, { no: b.no, carrier: '', tracking_no: '2' }]);
+    expect(res[0].ok && !res[1].ok && /찾을 수 없/.test(res[1].error) && !res[2].ok, `일괄 결과 ${JSON.stringify(res)}`);
+    expect(op.getOrder(a.id).status === 'shipped' && op.getOrder(b.id).status === 'preparing', '상태 반영 오류');
+    expect(denied(() => A(db, 'u_admA').bulkShip([])) && denied(() => own.bulkStatus([a.id], 'delivered')), '관리자·점주가 일괄 처리함');
+    const ev = own.getOrder(a.id).events.map((e) => e.text);
+    expect(ev.length === 5 && /주문 접수/.test(ev[0]) && ev.includes('배송 준비 시작') && ev.some((t) => /송장 등록/.test(t)), ev.join(' / '));
+    return '입금 확인·배송 준비·송장 일괄 (틀린 줄은 이유 표시), 점주에게 처리 이력 5단계';
+  });
+  check('+8', '세금계산서: 신청 → 보완 요청 → 발행 기록', () => {
+    const db = fresh(); const own = A(db, 'u_own'); const op = A(db, 'u_op');
+    const bank = own.placeOrder([{ product_id: 'p01', qty_boxes: 2 }], 'bank', SHIP); const card = own.placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'card', SHIP);
+    const buyer = { biz_no: '123-45-67890', company: '힙춘향마라탕 구래점', ceo: '김점주', address: '경기 김포' };
+    let msg = ''; try { own.requestTaxInvoice(bank.id, buyer); } catch (e) { msg = e.message; } expect(/입금/.test(msg), '입금 전 신청이 됨');
+    msg = ''; try { own.requestTaxInvoice(card.id, buyer); } catch (e) { msg = e.message; } expect(/매출전표/.test(msg), '카드 주문 신청이 됨');
+    op.confirmPayment(bank.id);
+    msg = ''; try { own.requestTaxInvoice(bank.id, { ...buyer, biz_no: '123' }); } catch (e) { msg = e.message; } expect(/10자리/.test(msg), '사업자번호 검사 안 됨');
+    own.requestTaxInvoice(bank.id, buyer);
+    expect(denied(() => A(db, 'u_admA').listTaxInvoices()), '관리자가 세금계산서를 봄');
+    op.returnTaxInvoice(bank.id, '업태·종목을 적어 주세요');
+    expect(own.listTaxInvoices()[0].status === 'returned' && /업태/.test(own.listTaxInvoices()[0].note), '보완 사유가 점주에게 안 보임');
+    own.requestTaxInvoice(bank.id, { ...buyer, biz_type: '음식점', biz_item: '마라탕' });
+    msg = ''; try { op.issueTaxInvoice(bank.id, { approval: '20261009-41000000-12345678', supply: 100000, tax: 10000, date: '2026-10-09' }); } catch (e) { msg = e.message; }
+    expect(/118000/.test(msg), '합계 검사 안 됨');
+    op.issueTaxInvoice(bank.id, { approval: '20261009-41000000-12345678', supply: 107273, tax: 10727, date: '2026-10-09' });
+    const t = own.listTaxInvoices()[0]; expect(t.status === 'issued' && t.approval_no.length === 24 && own.getOrder(bank.id).tax_invoice.status === 'issued', '발행 기록 오류');
+    return '입금 전·카드 주문 거절 → 신청 → 보완 요청 사유 표시 → 공급가+세액=118,000 확인 후 발행 기록';
+  });
+  check('+9', '페이백 이체 기록 (마감월 · 수취계좌)', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    let msg = ''; try { op.recordPayout('b_hct', '2026-07', { at: '2026-08-05T01:00:00Z' }); } catch (e) { msg = e.message; } expect(/마감/.test(msg), '마감 전 기록이 됨');
+    op.closeMonth('b_hct', '2026-07', false);
+    msg = ''; try { op.recordPayout('b_hct', '2026-07', { at: '2026-08-05T01:00:00Z' }); } catch (e) { msg = e.message; } expect(/계좌/.test(msg), '계좌 없이 기록이 됨');
+    op.setBrandAccount('b_hct', { bank: '국민', account_no: '123-45-6789', holder: '힙춘향' });
+    const row = op.recordPayout('b_hct', '2026-07', { ref: '거래 0001', at: '2026-08-05T01:00:00Z', memo: '7월분' });
+    expect(row.total === 596750 && row.account.bank === '국민', `이체 금액 ${row.total}`);
+    msg = ''; try { op.recordPayout('b_hct', '2026-07', { at: '2026-08-05T01:00:00Z' }); } catch (e) { msg = e.message; } expect(/이미/.test(msg), '두 번 기록됨');
+    expect(A(db, 'u_admA').listPayouts('b_hct').length === 1 && denied(() => A(db, 'u_admB').listPayouts('b_hct')) && denied(() => A(db, 'u_own').recordPayout('b_hct', '2026-08', {})), '이체 기록 권한 오류');
+    return '마감 전·계좌 없으면 거절 → 7월 마감 스냅샷 596,750원 기록 → 같은 달 두 번 불가, 관리자는 자기 브랜드만';
   });
   return results;
 }
@@ -1412,13 +1734,18 @@ function mapToDb(raw, me) {
       created_at: p.created_at, created_by: p.created_by })),
     orders: (raw.orders || []).map((o) => ({ id: o.id, no: o.no, brand_id: o.brand_id, store_id: o.store_id, user_id: o.user_id, status: o.status, pay_method: o.pay_method,
       shipping_fee: num(o.shipping_fee) || 0, discount: num(o.discount) || 0, is_virtual: !!o.is_virtual,
-      created_at: o.created_at, paid_at: o.paid_at, shipped_at: o.shipped_at, delivered_at: o.delivered_at,
+      created_at: o.created_at, paid_at: o.paid_at, preparing_at: o.preparing_at, shipped_at: o.shipped_at, delivered_at: o.delivered_at,
+      ship_to: o.ship_to || null, client_key: o.client_key || null,
       payback: o.payback_method ? { method: o.payback_method, rate: o.payback_rate_bp == null ? null : o.payback_rate_bp / 100, rule_id: o.payback_rule_id } : null,
       note: o.pay_method === 'import' ? '시트 이관 주문 (주문 일자 미상, 월 합계로 기록)' : undefined })),
     order_items: (raw.order_items || []).map((i) => ({ id: i.id, order_id: i.order_id, product_id: i.product_id, product_name: i.product_name, option_id: i.option_id, option_name: i.option_name,
       unit_price: num(i.unit_price), pack_qty: num(i.pack_qty), qty_boxes: num(i.qty_boxes), payback_per_box: num(i.payback_per_box) })),
     refunds: (raw.refunds || []).map((r) => ({ id: r.id, order_id: r.order_id, created_at: r.created_at, full: !!r.full_refund, lines: r.lines || [], reason: r.reason || '', adjust_month: ym(r.adjust_month) })),
     shipments: (raw.shipments || []).map((x) => ({ id: x.id, order_id: x.order_id, carrier: x.carrier, tracking_no: x.tracking_no, created_at: x.created_at })),
+    order_events: (raw.order_events || []).map((e) => ({ id: 'ev' + e.id, order_id: e.order_id, at: e.at, user_id: e.user_id, kind: e.kind, text: e.text })),
+    tax_invoices: (raw.tax_invoices || []).map((t) => ({ ...t, order_total: num(t.order_total), supply_amount: num(t.supply_amount), tax_amount: num(t.tax_amount) })),
+    brand_accounts: (raw.brand_accounts || []).map((a) => ({ brand_id: a.brand_id, bank: a.bank, account_no: a.account_no, holder: a.holder, updated_at: a.updated_at })),
+    payback_payouts: (raw.payback_payouts || []).map((x) => ({ ...x, month: ym(x.month), payback: num(x.payback), vat: num(x.vat), total: num(x.total) })),
     notices: (raw.notices || []).map((n) => ({ id: n.id, target: n.target, brand_id: n.brand_id, store_id: n.store_id, title: n.title, body: n.body || '', image: n.image_path || null,
       created_at: n.created_at, created_by: n.created_by })),
     payback_rules: (raw.payback_rules || []).map((r) => ({ id: r.id, brand_id: r.brand_id, method: r.method, rate: r.rate_bp == null ? null : r.rate_bp / 100, per_box: r.per_box || {},
@@ -1431,6 +1758,7 @@ function mapToDb(raw, me) {
       revenue: { basis: s.revenue_basis || 'paid', include_shipping: s.include_shipping !== false, include_discount: s.include_discount !== false, price_includes_vat: true },
       payback_vat: s.payback_vat !== false,
       shipping_fee: num(s.shipping_fee ?? pub.shipping_fee) || 0,
+      free_shipping_over: num(s.free_shipping_over ?? pub.free_shipping_over) || 0,
       carriers: s.carriers || [],
       site_url: s.site_url ?? pub.site_url ?? '',
       bank_account: s.bank_account ?? pub.bank_account ?? '',
@@ -1502,7 +1830,7 @@ const Live = {
       if (!me) throw new Error('프로필을 찾을 수 없습니다. 잠시 뒤 다시 로그인해 주세요.');
       const staff = me.role === 'developer' || me.role === 'operator';
       const tables = ['brands', 'profiles', 'stores', 'memberships', 'invite_codes', 'categories', 'products', 'product_options', 'brand_prices',
-        'payback_rules', 'shipments', 'refunds', 'notices', 'monthly_closings'];
+        'payback_rules', 'shipments', 'refunds', 'notices', 'monthly_closings', 'order_events', 'tax_invoices', 'brand_accounts', 'payback_payouts'];
       const raw = {};
       await Promise.all(tables.map(async (t) => { raw[t] = await this.fetchAll(t); }));
       [raw.orders, raw.order_items] = await Promise.all([this.fetchAll('orders', { order: 'created_at' }), this.fetchAll('order_items')]);
@@ -1571,9 +1899,28 @@ const Live = {
       if (!rows.length) return;
       const { error } = await Live.client.from('brand_prices').insert(rows); if (error) throw error;
     },
-    async placeOrder(lines, pay) {
-      await Live.rpc('place_order', { p_lines: lines.map((l) => ({ product_id: l.product_id, option_id: l.option_id || '', qty_boxes: l.qty_boxes })), p_pay: pay });
+    async placeOrder(lines, pay, shipTo, clientKey) {
+      await Live.rpc('place_order', { p_lines: lines.map((l) => ({ product_id: l.product_id, option_id: l.option_id || '', qty_boxes: l.qty_boxes })), p_pay: pay,
+        p_ship_to: shipTo || {}, p_client_key: clientKey || null });
     },
+    async cancelMyOrder(oid) { await Live.rpc('owner_cancel_order', { p_oid: oid }); },
+    async bulkStatus(ids, to) { await Live.rpc('bulk_status', { p_ids: ids, p_to: to }); },
+    async bulkShip(rows) {
+      const res = await Live.rpc('bulk_ship', { p_rows: rows.map((r) => ({ no: r.no, carrier: r.carrier, tracking_no: r.tracking_no })) });
+      const bad = (res || []).filter((r) => !r.ok);
+      if (bad.length) throw new Error(`${bad.length}건은 저장하지 못했습니다: ${bad.slice(0, 3).map((r) => `${r.no} (${r.error})`).join(', ')}`);
+    },
+    async requestTaxInvoice(oid, buyer) { await Live.rpc('request_tax_invoice', { p_oid: oid, p_buyer: buyer }); },
+    async returnTaxInvoice(oid, note) { await Live.rpc('tax_invoice_return', { p_oid: oid, p_note: note }); },
+    async issueTaxInvoice(oid, f) {
+      await Live.rpc('tax_invoice_issue', { p_oid: oid, p_approval: f.approval, p_supply: Math.round(Number(f.supply)), p_tax: Math.round(Number(f.tax)), p_date: f.date });
+    },
+    async setBrandAccount(bid, acc) {
+      const { error } = await Live.client.from('brand_accounts').upsert({ brand_id: bid, bank: String(acc.bank).trim(), account_no: String(acc.account_no).trim(), holder: String(acc.holder).trim(),
+        updated_at: new Date().toISOString(), updated_by: Live.session.user.id }, { onConflict: 'brand_id' });
+      if (error) throw error;
+    },
+    async recordPayout(bid, month, f) { await Live.rpc('record_payout', { p_brand: bid, p_month: month + '-01', p_ref: f.ref || null, p_at: new Date(f.at).toISOString(), p_memo: f.memo || null }); },
     async confirmPayment(oid) { const { error } = await Live.client.from('orders').update({ status: 'paid', paid_at: new Date().toISOString() }).eq('id', oid).eq('status', 'pending_payment'); if (error) throw error; },
     async setDiscount(oid, amount) { const { error } = await Live.client.from('orders').update({ discount: Math.max(0, Math.round(Number(amount) || 0)) }).eq('id', oid); if (error) throw error; },
     async ship(oid, carrier, tracking, cache) {
@@ -1603,7 +1950,7 @@ const Live = {
     async saveSettings(p) {
       const row = {};
       if (p.revenue) Object.assign(row, { revenue_basis: p.revenue.basis, include_shipping: !!p.revenue.include_shipping, include_discount: !!p.revenue.include_discount });
-      for (const k of ['payback_vat', 'shipping_fee', 'carriers', 'site_url', 'bank_account', 'footer']) if (k in p) row[k] = p[k];
+      for (const k of ['payback_vat', 'shipping_fee', 'free_shipping_over', 'carriers', 'site_url', 'bank_account', 'footer']) if (k in p) row[k] = p[k];
       const { error } = await Live.client.from('app_settings').update(row).eq('id', 1); if (error) throw error;
     },
     async applyWithCode(code, info) { await Live.rpc('apply_with_code', { p_code: String(code).trim().toUpperCase(), p_info: info }); },
@@ -1638,7 +1985,8 @@ const state = {
   uid: LIVE ? null : loadUid(), page: initRoute.page, liveView: LIVE ? 'boot' : 'app', busy: 0, authTab: 'login', param: initRoute.param,
   virtual: false, base: nowMonth(), n: 4, view: 'separate', cumul: false, scope: 'all',
   boxesMonth: addMonths(nowMonth(), -3), settleMonth: addMonths(nowMonth(), -3),
-  orderFilter: { brand: '', status: '' }, orderLimit: 50, priceBrand: 'b_hct',
+  of: { brand: '', quick: '', q: '', period: '' }, sel: {}, orderLimit: 50, priceBrand: 'b_hct', taxFilter: 'requested', payBrand: '', payMonth: '',
+  cardQty: {}, cardOpt: {}, shipDraft: null, payDraft: null, clientKey: null, myFilter: 'all',
   cart: {}, shopCat: 'all', shopSort: 'default', modal: null, confirm: null, copyFallback: null, qa: null,
   navOpen: false, acctOpen: false, noticeId: null, shopQ: '', rollPrev: {}, lastChartKey: '', replay: false, notifyNext: null, dismissed: loadPref('dismissed') || '',
 };
@@ -1678,13 +2026,15 @@ const api = () => {
 /* ---------- 표기·작은 도구 ---------- */
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const ROLE = { developer: '개발자', operator: '운영자', admin: '관리자', owner: '가맹점주', guest: '방문자' };
-const STATUS = { pending_payment: ['입금 대기', 'st-wait'], paid: ['결제 완료', 'st-wait'], shipped: ['배송 중', 'st-line'], delivered: ['배송 완료', 'st-done'], cancelled: ['취소', 'st-err'], refunded: ['환불', 'st-err'] };
+const STATUS = { pending_payment: ['입금 대기', 'st-pay'], paid: ['결제 확인', 'st-paid'], preparing: ['배송 준비', 'st-paid'], shipped: ['배송 중', 'st-ship'], delivered: ['배송 완료', 'st-ship'], cancelled: ['취소', 'st-err'], refunded: ['환불', 'st-err'] };
+const TAX = { requested: ['발행 요청', 'st-pay'], returned: ['보완 요청', 'st-err'], issued: ['발행 완료', 'st-ship'] };
 const MEMBER = { pending: ['승인 대기', 'st-wait'], approved: ['승인', 'st-done'], rejected: ['반려', 'st-err'] };
 const PAY = { card: '카드', bank: '계좌이체', import: '시트 이관' };
 const PAGE_LABEL = { sales: '매출', boxes: '품목별 박스', payback: '페이백·마감', approvals: '가입 승인', brands: '브랜드·초대코드', orders: '주문·송장', notices: '공지',
   products: '상품·옵션', prices: '브랜드 단가', audit: '감사 로그', settings: '운영 설정', qa: '검수', design: '설계 문서', devsettings: '개발자 설정',
-  home: '홈', shop: '주문하기', cart: '장바구니', myorders: '주문내역', mynotices: '공지' };
-const NAV_GROUPS = [['현황', ['home', 'sales', 'boxes', 'payback']], ['가맹', ['approvals', 'brands']], ['주문', ['orders', 'notices']], ['상품', ['products', 'prices']],
+  home: '홈', shop: '주문하기', cart: '장바구니', checkout: '주문서', myorders: '주문내역', order: '주문 상세', mytax: '세금계산서', mynotices: '공지',
+  payouts: '페이백 지급', taxinvoices: '세금계산서' };
+const NAV_GROUPS = [['현황', ['home', 'sales', 'boxes', 'payback', 'payouts']], ['가맹', ['approvals', 'brands']], ['주문', ['orders', 'taxinvoices', 'notices']], ['상품', ['products', 'prices']],
   ['기록', ['audit', 'settings']], ['개발자', ['qa', 'design', 'devsettings']]];
 const fmtDate = (iso) => { if (!iso) return '-'; const p = kstParts(iso); return `${p.y}.${pad2(p.m)}.${pad2(p.d)} ${pad2(p.hh)}:${pad2(p.mi)}`; };
 const fmtDateOnly = (iso) => { if (!iso) return '-'; const p = kstParts(iso); return `${p.y}.${pad2(p.m)}.${pad2(p.d)}`; };
@@ -1794,7 +2144,7 @@ function Header(me, page) {
   return `<header class="header ${staffish ? 'staff' : ''}" id="hdr"><div class="header-in ${staffish ? 'w-staff' : 'w-owner'}">
     ${staffish ? `<button class="iconbtn menu-burger" data-act="navopen" aria-label="메뉴 열기">${ICON.menu}</button>` : ''}
     <button class="logo" data-act="home" aria-label="모아상점 처음 화면"><span class="wordmark">moa<i>.</i></span><span class="tag">${esc(me.user ? brandTag(me) : '가맹점 전용 주문몰')}</span></button>
-    ${isOwner ? `<nav class="hnav" aria-label="주문몰 메뉴">${['shop', 'myorders', 'mynotices'].map((p) => `<button data-act="nav" data-p="${p}" ${page === p ? 'aria-current="page"' : ''}>${PAGE_LABEL[p]}</button>`).join('')}</nav>` : ''}
+    ${isOwner ? `<nav class="hnav" aria-label="주문몰 메뉴">${['shop', 'myorders', 'mytax', 'mynotices'].map((p) => `<button data-act="nav" data-p="${p}" ${(OWNER_TAB[page] || page) === p || page === p ? 'aria-current="page"' : ''}>${PAGE_LABEL[p]}</button>`).join('')}</nav>` : ''}
     <div class="hright">${isOwner ? `<button class="iconbtn" data-act="nav" data-p="cart" aria-label="장바구니 ${cc}박스">${ICON.cart}${cc ? `<span class="cnt">${cc}</span>` : ''}</button>` : ''}${acct}</div>
   </div>${me.user ? `<div class="hbrand-mobile">${esc(brandTag(me))}</div>` : ''}</header>
   ${state.virtual ? '<div class="vbar">가상 테스트 데이터를 보는 중입니다. 실제 실적이 아닙니다.</div>' : ''}`;
@@ -1812,9 +2162,10 @@ function Footer(owner) {
     ${parts.length ? `<span>${parts.map(esc).join(' · ')}</span>` : ''}<span>문의 ${esc(f.contact || '운영자에게 문의해 주세요')}</span>
     <div class="links"><button data-act="legal" data-v="terms">이용약관</button><button data-act="legal" data-v="privacy">개인정보처리방침</button></div></div></footer>`;
 }
+const OWNER_TAB = { checkout: 'cart', order: 'myorders', mytax: 'myorders' };
 function TabBar(page) {
-  const cc = cartCount();
-  return `<nav class="tabbar" aria-label="점주 메뉴"><div class="tabbar-in">${NAV.owner.map((p) => `<button data-act="nav" data-p="${p}" ${page === p ? 'aria-current="page"' : ''}>${ICON[p]}${PAGE_LABEL[p]}${p === 'cart' && cc ? `<span class="cnt">${cc}</span>` : ''}</button>`).join('')}</div></nav>`;
+  const cc = cartCount(); const cur = OWNER_TAB[page] || page;
+  return `<nav class="tabbar" aria-label="점주 메뉴"><div class="tabbar-in">${['shop', 'cart', 'myorders', 'mynotices'].map((p) => `<button data-act="nav" data-p="${p}" ${cur === p ? 'aria-current="page"' : ''}>${ICON[p]}${PAGE_LABEL[p]}${p === 'cart' && cc ? `<span class="cnt">${cc}</span>` : ''}</button>`).join('')}</div></nav>`;
 }
 
 /* ---------- 로그인·가입 ---------- */
@@ -2046,6 +2397,9 @@ function renderAdmin(page) {
       InviteCard(me.brand_id) +
       (rep.__error ? '' : `<div class="bento">${Tile('sales', 'chart', '매출 그래프', `<span class="label">최근 4개월</span><span class="big" data-roll="${rep.total}" data-rollkey="admin-sales">${fmtWon(rep.total)}</span><div class="anim">${BarChart(rep.monthsData, nowMonth(), true)}</div>`, 'span2')}
         ${Tile('sales', 'coin', '이번 달 매출', `<span class="big">${fmtWon(rep.monthsData[rep.monthsData.length - 1].amount)}</span><span class="t13 sub">${monthLabel(nowMonth())} · 결제 완료 기준</span>`)}</div>`);
+    const pays = guard(() => a.listPayouts(me.brand_id)); const acc = guard(() => a.getBrandAccount(me.brand_id));
+    if (Array.isArray(pays)) main += `<section class="card"><div class="row between"><h2>페이백 지급 내역</h2><span class="t13 sub">${acc && !acc.__error ? `받는 계좌 ${esc(acc.bank)} ${esc(acc.account_no)} (${esc(acc.holder)})` : '받을 계좌를 운영자에게 알려 주세요'}</span></div>
+      ${pays.length ? PayoutTable(pays, false) : '<p class="t13 sub">아직 이체 기록이 없습니다. 운영자가 달마다 마감한 뒤 이체하고 여기에 기록합니다.</p>'}</section>`;
   }
   return shellLayout(me, page, main);
 }
@@ -2066,78 +2420,225 @@ function renderOwner(page) {
   const seenKey = 'approved-seen:' + me.membership.id;
   if (!loadPref(seenKey)) { savePref(seenKey, '1'); state.notifyNext = { title: '가입 승인 완료', text: `오늘부터 ${me.brand_name} 계약가로 주문할 수 있어요.` }; }
   let main = '', extra = '', padCls = 'has-tabbar';
-  if (page === 'cart') { const c = ownerCart(a, me); main = c.html; extra = c.bar; if (c.bar) padCls += ' has-paybar'; }
-  else if (page === 'myorders') {
-    const list = a.listOrders();
-    main = PageHead('주문내역', '', `${esc(me.brand_name)} · 주문·배송`) + (list.length ? `<div class="orderlist">${list.map(OrderCardOwner).join('')}</div>` : EmptyState('아직 주문이 없습니다', '상품을 담아 첫 주문을 해 보세요.', `<button class="btn" data-act="nav" data-p="shop">주문하러 가기</button>`));
-  } else if (page === 'mynotices') {
+  if (page === 'cart' || page === 'checkout') { const c = page === 'cart' ? ownerCart(a, me) : ownerCheckout(a, me); main = c.html; extra = c.bar; if (c.bar) padCls += ' has-paybar'; }
+  else if (page === 'myorders') main = ownerOrders(a, me);
+  else if (page === 'order') main = ownerOrderPage(a, me);
+  else if (page === 'mytax') main = ownerTax(a, me);
+  else if (page === 'mynotices') {
     const ns = a.listNotices(); const n = state.noticeId && ns.find((x) => x.id === state.noticeId);
     main = n ? `<article class="article"><button class="textbtn backlink" data-act="noticeback">← 공지 목록</button><div class="stack s2"><span class="label">${n.target === 'all' ? '전체 공지' : n.target === 'brand' ? '브랜드 공지' : '우리 매장 공지'} · ${fmtDateOnly(n.created_at)}</span><h1>${esc(n.title)}</h1></div>
         ${n.image ? `<img src="${n.image}" alt="${esc(n.title)} 첨부 이미지" loading="lazy">` : ''}<div class="body">${esc(n.body)}</div></article>`
       : PageHead('공지', '', esc(me.brand_name)) + (ns.length ? `<div class="nlist">${ns.map((x) => `<button data-act="opennotice" data-n="${x.id}"><span class="tt">${esc(x.title)}</span><span class="t13 sub nw">${fmtDateOnly(x.created_at)}</span></button>`).join('')}</div>` : EmptyState('새 공지가 없습니다', ''));
-  } else main = ownerShop(a, me);
+  } else {
+    main = ownerShop(a, me);
+    if (cartCount()) { const t = cartTotals(a, a.listProducts()); padCls += ' has-cartbar';
+      extra = `<div class="cartbar"><div><span class="t12 sub">총 ${t.boxes}박스 · 배송비 포함</span><div class="tot">${fmtExact(t.total)}</div></div><button class="btn" data-act="nav" data-p="cart">장바구니 보기 <span class="cbadge">${t.lines.length}</span></button></div>`; }
+  }
   return `${NoticeBar(me)}${Header(me, page)}<main class="page owner ${padCls}">${main}</main>${extra}${Footer(true)}${TabBar(page)}`;
 }
 function shopFiltered(prods) {
   const q = (state.shopQ || '').trim().toLowerCase();
-  let shown = prods.filter((p) => (state.shopCat === 'all' || p.category_id === state.shopCat) && (!q || p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q)));
+  let shown = prods.filter((p) => (state.shopCat === 'all' || p.category_id === state.shopCat) && (!q || p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q) || p.options.some((o) => o.name.toLowerCase().includes(q))));
   const sorters = { name: (x, y) => x.name.localeCompare(y.name, 'ko'), low: (x, y) => x.price.price - y.price.price, high: (x, y) => y.price.price - x.price.price };
   if (sorters[state.shopSort]) shown = shown.slice().sort(sorters[state.shopSort]);
   return shown;
+}
+const cartBoxesOf = (pid) => Object.values(state.cart).filter((l) => l.product_id === pid).reduce((s, l) => s + l.qty, 0);
+/** 상품 카드: 카드 안에서 옵션·수량을 고르고 바로 담는다 (사진·이름을 누르면 자세히) */
+function ProductCard(p) {
+  const qty = state.cardQty[p.id] || 1;
+  const opt = state.cardOpt[p.id] || (p.options[0] ? p.options[0].id : '');
+  const inCart = cartBoxesOf(p.id);
+  return `<article class="pcard">${Thumb(p, 'openp')}
+    <div class="pinfo"><button class="pname" data-act="openp" data-p="${p.id}">${esc(p.name)}</button>
+      <span class="pmeta">${p.code ? esc(p.code) + ' · ' : ''}${packText(p.pack_qty)}</span>
+      <span class="pprice">${fmtExact(p.price.price)}<small>/ 박스</small></span>
+      ${inCart ? `<span class="incart">✓ 장바구니 ${inCart}박스</span>` : ''}</div>
+    <div class="pctl">${p.options.length ? `<span class="selwrap popt"><select class="select" data-change="cardopt" data-k="${p.id}" aria-label="${esc(p.name)} 옵션">${opts(p.options.map((o) => [o.id, o.name]), opt)}</select></span>` : ''}
+      ${Stepper('cardqty', 'cardset', p.id, qty)}<button class="btn padd" data-act="cardadd" data-p="${p.id}" aria-label="${esc(p.name)} ${qty}박스 담기">${ICON.plus}담기</button></div>
+  </article>`;
 }
 function shopListHtml(prods) {
   const shown = shopFiltered(prods);
   const catName = (db.categories.find((c) => c.id === state.shopCat) || {}).name;
   const chips = [state.shopCat !== 'all' ? `<button class="chip filter" data-act="cat" data-c="all" aria-label="${esc(catName)} 필터 지우기">${esc(catName)}<span class="x" aria-hidden="true">×</span></button>` : '',
     state.shopQ ? `<button class="chip filter" data-act="clearq" aria-label="검색어 지우기">"${esc(state.shopQ)}"<span class="x" aria-hidden="true">×</span></button>` : ''].join('');
-  const head = `<div class="listhead"><h2>상품<span class="count">${shown.length}개</span></h2>${Select('shop-sort', 'sort', [['default', '기본순'], ['name', '이름순'], ['low', '낮은 가격순'], ['high', '높은 가격순']], state.shopSort, '정렬', 'line')}</div>
+  const head = `<div class="listhead"><h2>상품<span class="count">${shown.length}개</span></h2><div class="row"><span class="t12 sub">1박스 · 부가세 포함</span>${Select('shop-sort', 'sort', [['default', '기본순'], ['name', '이름순'], ['low', '낮은 가격순'], ['high', '높은 가격순']], state.shopSort, '정렬', 'line')}</div></div>
     ${chips ? `<div class="applied"><span class="t13 sub">적용된 필터</span>${chips}</div>` : ''}`;
-  if (!shown.length) return head + EmptyState('조건에 맞는 상품이 없습니다', '', `<button class="btn secondary" data-act="resetshop">필터 초기화</button>`);
-  return head + `<div class="plist">${shown.map((p) => `<article class="pitem">${Thumb(p, 'openp')}
-      <button class="pname" data-act="openp" data-p="${p.id}">${esc(p.name)}</button><span class="pprice">${fmtExact(p.price.price)}</span>
-      <span class="pmeta">${p.code ? esc(p.code) + ' · ' : ''}${packText(p.pack_qty)}${p.options.length ? ` · 옵션 ${p.options.length}` : ''}</span>
-      <button class="btn secondary sm padd" data-act="openp" data-p="${p.id}" aria-label="${esc(p.name)} 담기">${ICON.plus}담기</button></article>`).join('')}</div>`;
+  if (!shown.length) return head + EmptyState('검색 결과가 없습니다', '다른 상품명이나 분류를 선택해 주세요.', `<button class="btn secondary" data-act="resetshop">검색 초기화</button>`);
+  return head + `<div class="pgrid">${shown.map(ProductCard).join('')}</div>`;
+}
+/* ---------- 장바구니 계산 (화면 공통) ---------- */
+function cartTotals(a, prods) {
+  const lines = Object.entries(state.cart).map(([k, l]) => { const p = prods.find((x) => x.id === l.product_id); return p ? { k, l, p, opt: p.options.find((o) => o.id === l.option_id) } : null; }).filter(Boolean);
+  const goods = lines.reduce((s, x) => s + x.p.price.price * x.l.qty, 0), boxes = lines.reduce((s, x) => s + x.l.qty, 0);
+  const sh = a.shippingFor(goods);
+  return { lines, goods, boxes, fee: sh.fee, over: sh.over, base: sh.base, total: goods + sh.fee };
+}
+const shipText = (t) => (t.fee ? fmtExact(t.fee) : t.base ? '무료' : '0원');
+function FreeShip(t) {
+  if (!t.over || !t.base || !t.goods) return '';
+  const left = t.over - t.goods;
+  return left > 0 ? `<div class="freeship"><span class="t13"><b>${fmtExact(left)}</b> 더 담으면 무료배송</span><span class="meter"><i style="width:${Math.min(100, (t.goods / t.over) * 100).toFixed(1)}%"></i></span></div>`
+    : `<div class="freeship done"><span class="t13">무료배송 금액을 채웠어요</span><span class="meter"><i style="width:100%"></i></span></div>`;
+}
+function MiniCart(a, prods) {
+  const t = cartTotals(a, prods);
+  return `<aside class="minicart" aria-label="장바구니 요약"><div class="row between"><h2>장바구니</h2><span class="t13 sub">${t.lines.length}개 옵션 · ${t.boxes}박스</span></div>
+    ${t.lines.length ? `<div class="mclines">${t.lines.map(({ k, l, p, opt }) => `<div class="mcl"><span class="nm">${esc(p.name)}${opt ? ` <span class="sub">(${esc(opt.name)})</span>` : ''}</span>
+        <div class="row between nowrap">${Stepper('cartqty', 'cartset', k, l.qty)}<b class="num">${fmtExact(p.price.price * l.qty)}</b></div></div>`).join('')}</div>
+      ${FreeShip(t)}<div class="sumline"><span class="sub">배송비</span><span>${shipText(t)}</span></div>
+      <div class="sumline total"><span class="t13">총 ${t.boxes}박스</span><span>${fmtExact(t.total)}</span></div>
+      <button class="btn lg block" data-act="nav" data-p="checkout">주문서 작성</button>`
+    : `<p class="t13 sub">주문할 상품을 담아 주세요. 옵션과 박스 수량을 고른 뒤 담기를 누르면 여기에 모입니다.</p>`}</aside>`;
 }
 function ownerShop(a, me) {
   const prods = a.listProducts(); const cats = a.listCategories().filter((c) => prods.some((p) => p.category_id === c.id));
   const store = (db.stores.find((s) => s.id === me.store_id) || {}).name || '';
   const hero = `<section class="hero"><span class="eyebrow">Your daily supply</span><h1>필요한 상품,<br>간편하게 주문하세요.</h1>
     <div class="row"><span class="chip accent">${esc(me.brand_name)} 계약가 적용</span><span class="chip">${esc(store)}</span></div>
-    <label class="search">${ICON.search}<input type="search" id="shop-q" value="${esc(state.shopQ || '')}" data-input="shopq" placeholder="상품명 또는 상품코드 검색" aria-label="상품 검색" autocomplete="off"></label>
+    <label class="search">${ICON.search}<input type="search" id="shop-q" value="${esc(state.shopQ || '')}" data-input="shopq" placeholder="상품명, 코드 또는 옵션 검색" aria-label="상품 검색" autocomplete="off"></label>
     <div class="cats" role="group" aria-label="품목"><button data-act="cat" data-c="all" aria-pressed="${state.shopCat === 'all'}">전체<span class="n">${prods.length}</span></button>${cats.map((c) => `<button data-act="cat" data-c="${c.id}" aria-pressed="${state.shopCat === c.id}">${esc(c.name)}<span class="n">${prods.filter((p) => p.category_id === c.id).length}</span></button>`).join('')}</div></section>`;
   if (!prods.length) return hero + EmptyState('아직 우리 브랜드 계약 단가가 없습니다', '본사 또는 운영자에게 문의해 주세요.');
-  return hero + `<div id="shoplist" class="stack">${shopListHtml(prods)}</div>`;
+  const last = a.listOrders().find((o) => o.items.length && !['cancelled'].includes(o.status));
+  const re = last ? `<section class="recard"><div class="stack s2"><b>지난 주문이 필요하신가요?</b><span class="t13 sub">${fmtDateOnly(last.created_at)} · ${esc(last.items[0].product_name)}${last.items.length > 1 ? ` 외 ${last.items.length - 1}종` : ''} · ${last.items.reduce((s, i) => s + i.qty_boxes, 0)}박스 — 현재 가격으로 다시 담을 수 있어요.</span></div>
+    <button class="btn secondary sm" data-act="reorder" data-o="${last.id}">최근 주문 다시 담기</button></section>` : '';
+  return `<div class="shopgrid"><div class="stack s5">${hero}${re}<div id="shoplist" class="stack">${shopListHtml(prods)}</div></div>${MiniCart(a, prods)}</div>`;
 }
+
+/* ---------- 주문 진행 ---------- */
+const STEP_MSG = { pending_payment: ['입금을 기다리고 있어요', '입금이 확인되면 바로 출고 준비를 시작합니다.'], paid: ['결제가 확인됐어요', '곧 배송 준비를 시작합니다.'],
+  preparing: ['상품을 준비하고 있어요', '송장이 등록되면 여기서 확인할 수 있습니다.'], shipped: ['배송 중이에요', '송장번호를 복사해 택배사 조회 화면에 붙여넣으세요.'],
+  delivered: ['배송이 끝났어요', '필요한 상품은 다시 담기로 빠르게 주문하세요.'] };
+function Progress(o) {
+  if (['cancelled', 'refunded'].includes(o.status)) return `<div class="progress off"><b>${o.status === 'refunded' ? '취소·환불된 주문입니다' : '취소된 주문입니다'}</b><span class="t13">이미 받은 금액이 있으면 운영자가 따로 돌려드립니다.</span></div>`;
+  const idx = ORDER_STEPS.indexOf(o.status); const [t1, t2] = STEP_MSG[o.status] || ['', ''];
+  return `<div class="progress"><div class="stack s2"><b>${t1}</b><span class="t13">${t2}</span></div>
+    <ol class="steps">${ORDER_STEPS.map((s, i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}" ${i === idx ? 'aria-current="step"' : ''}><i>${i < idx ? '✓' : i + 1}</i><span>${STATUS[s][0]}</span></li>`).join('')}</ol></div>`;
+}
+function MiniSteps(o) {
+  if (['cancelled', 'refunded'].includes(o.status)) return '';
+  const idx = ORDER_STEPS.indexOf(o.status);
+  return `<div class="msteps" aria-hidden="true">${ORDER_STEPS.map((s, i) => `<i class="${i <= idx ? 'on' : ''}"></i>`).join('')}</div>`;
+}
+const CARRIER_LINKS = [[/cj|대한통운/i, 'https://www.cjlogistics.com/ko/tool/parcel/tracking'], [/한진/, 'https://www.hanjin.com/kor/CMS/DeliveryMgr/WaybillSch.do?mCode=MN038'],
+  [/롯데/, 'https://www.lotteglogis.com/home/reservation/tracking/index'], [/우체국|epost/i, 'https://service.epost.go.kr/iservice/usr/trace/usrtrc001k01.jsp']];
+const carrierLink = (c) => (CARRIER_LINKS.find(([re]) => re.test(c || '')) || [])[1] || null;
+function TrackCard(o, compact) {
+  if (!o.shipment) return '';
+  const link = carrierLink(o.shipment.carrier);
+  return `<div class="trackline ${compact ? 'compact' : ''}"><span class="stack" style="gap:0"><span class="t12 sub">${esc(o.shipment.carrier)} · 송장번호</span><span class="no" id="trk-${o.id}">${esc(o.shipment.tracking_no)}</span></span>
+    <span class="row"><button class="btn secondary sm" data-act="copytrack" data-o="${o.id}">${ICON.copy}송장 복사</button>${link && !compact ? `<a class="btn secondary sm" href="${link}" target="_blank" rel="noopener">택배사 조회 ↗</a>` : ''}</span></div>`;
+}
+const orderBoxes = (o) => o.items.reduce((s, i) => s + i.qty_boxes, 0);
+const firstItemText = (o) => (o.items.length ? `${esc(o.items[0].product_name)}${o.items.length > 1 ? ` 외 ${o.items.length - 1}종` : ''}` : '-');
 function OrderCardOwner(o) {
-  const boxes = o.items.reduce((s, i) => s + i.qty_boxes, 0);
-  return `<article class="ocard"><div class="head"><div><b class="num">${esc(o.no)}</b><div class="t13 sub">${fmtDate(o.created_at)} · ${PAY[o.pay_method] || o.pay_method}</div></div>${StatusChip(STATUS, o.status)}</div>
-    ${o.shipment ? `<div class="trackline"><span class="stack s2" style="gap:0"><span class="t12 sub">${esc(o.shipment.carrier)} · 송장번호</span><span class="no" id="trk-${o.id}">${esc(o.shipment.tracking_no)}</span></span><button class="btn secondary sm" data-act="copytrack" data-o="${o.id}">${ICON.copy}복사</button></div>` : ''}
-    <div class="lines">${o.items.map((i) => `<div class="sumline"><span>${esc(i.product_name)}${i.option_name ? ` <span class="sub">(${esc(i.option_name)})</span>` : ''}<br><span class="t13 sub">${fmtBoxes(i.qty_boxes, i.pack_qty)}</span></span><span>${fmtExact(i.unit_price * i.qty_boxes)}</span></div>`).join('')}
-    ${o.shipping_fee ? `<div class="sumline"><span class="sub">배송비</span><span>${fmtExact(o.shipping_fee)}</span></div>` : ''}${o.discount ? `<div class="sumline"><span class="sub">할인</span><span>-${fmtExact(o.discount)}</span></div>` : ''}
-    <div class="sumline total"><span class="t13">총 ${boxes}박스</span><span>${fmtExact(o.total)}</span></div></div>
-    ${o.status === 'pending_payment' ? `<p class="note warn">입금 확인 후 출고됩니다. 입금 계좌: ${esc(db.settings.bank_account || '(본사 안내 예정)')}</p>` : ''}
-    ${o.note ? `<p class="t13 sub">${esc(o.note)}</p>` : ''}</article>`;
+  return `<article class="ocard"><div class="head"><div><button class="olink num" data-act="openorder" data-o="${o.id}">${esc(o.no)}</button><div class="t13 sub">${fmtDate(o.created_at)} · ${PAY[o.pay_method] || o.pay_method}</div></div>${StatusChip(STATUS, o.status)}</div>
+    <div class="osum"><span>${firstItemText(o)}</span><b class="num">${orderBoxes(o)}박스 · ${fmtExact(o.total)}</b></div>
+    ${MiniSteps(o)}${TrackCard(o, true)}
+    ${o.status === 'pending_payment' ? `<p class="note warn">입금 확인 후 출고됩니다.</p>` : ''}
+    <div class="row"><button class="btn secondary sm" data-act="openorder" data-o="${o.id}">주문 상세</button><button class="btn secondary sm" data-act="reorder" data-o="${o.id}">다시 담기</button></div></article>`;
+}
+const OwnerTabs = (cur) => `<div class="seg wide" role="group" aria-label="주문내역 보기" style="--n:2;--i:${cur === 'mytax' ? 1 : 0}"><button data-act="nav" data-p="myorders" aria-pressed="${cur !== 'mytax'}">주문</button><button data-act="nav" data-p="mytax" aria-pressed="${cur === 'mytax'}">세금계산서</button></div>`;
+function ownerOrders(a, me) {
+  const list = a.listOrders(); const f = state.myFilter || 'all';
+  const G = { all: ['전체', () => true], active: ['진행 중', (o) => ['pending_payment', 'paid', 'preparing', 'shipped'].includes(o.status)], done: ['배송 완료', (o) => o.status === 'delivered'], cancel: ['취소', (o) => ['cancelled', 'refunded'].includes(o.status)] };
+  const shown = list.filter(G[f][1]);
+  return PageHead('주문내역', '', `${esc(me.brand_name)} · 주문·배송`) + OwnerTabs('myorders') +
+    `<div class="cats" role="group" aria-label="주문 상태">${Object.entries(G).map(([k, [l, fn]]) => `<button data-act="myfilter" data-v="${k}" aria-pressed="${f === k}">${l}<span class="n">${list.filter(fn).length}</span></button>`).join('')}</div>` +
+    (shown.length ? `<div class="orderlist">${shown.map(OrderCardOwner).join('')}</div>` : list.length ? EmptyState('이 상태의 주문이 없습니다', '') : EmptyState('아직 주문이 없습니다', '상품을 담아 첫 주문을 만들어 보세요.', `<button class="btn" data-act="nav" data-p="shop">주문하러 가기</button>`));
+}
+/** 주문 상세 — 점주 화면과 운영자 시트가 같이 쓴다 */
+function OrderDetail(a, o, staff) {
+  const bank = a.publicInfo().bank_account;
+  const st = o.ship_to;
+  const head = `<div class="ohead"><div class="stack s2"><span class="label">${fmtDate(o.created_at)} · ${PAY[o.pay_method] || o.pay_method}${staff ? ` · ${esc(o.brand_name)} ${esc(o.store_name)}` : ''}</span>
+      <div class="row"><h2 class="num" id="ono-${o.id}">${esc(o.no)}</h2><button class="btn secondary sm" data-act="copyno" data-o="${o.id}">${ICON.copy}주문번호 복사</button></div></div>${StatusChip(STATUS, o.status)}</div>`;
+  const pay = o.status === 'pending_payment' && o.pay_method === 'bank' ? `<section class="dblock"><h3>입금 안내</h3><div class="sumline"><span class="sub">입금할 금액</span><b>${fmtExact(o.total)}</b></div>
+      <div class="sumline"><span class="sub">입금 계좌</span><span id="bank-${o.id}">${esc(bank || '(운영자 안내 예정)')}</span></div>${bank ? `<button class="btn secondary sm start" data-act="copybank" data-o="${o.id}">${ICON.copy}계좌번호 복사</button>` : ''}</section>` : '';
+  const ship = `<section class="dblock"><h3>배송 정보</h3>${TrackCard(o) || (['cancelled', 'refunded'].includes(o.status) ? '' : '<p class="t13 sub">송장이 등록되면 여기서 확인할 수 있습니다.</p>')}
+      ${st ? `<div class="addr"><b>${esc(st.name)}</b> <span class="sub">${esc(st.phone)}</span><br>${st.zip ? `(${esc(st.zip)}) ` : ''}${esc(st.addr1)} ${esc(st.addr2 || '')}${st.memo ? `<br><span class="t13 sub">메모: ${esc(st.memo)}</span>` : ''}</div>` : `<p class="t13 sub">${o.pay_method === 'import' ? '시트로 옮긴 주문이라 배송지 기록이 없습니다.' : '배송지 기록이 없습니다.'}</p>`}</section>`;
+  const items = `<section class="dblock"><h3>주문 상품</h3><div class="lines">${o.items.map((i) => `<div class="sumline"><span>${esc(i.product_name)}${i.option_name ? ` <span class="sub">(${esc(i.option_name)})</span>` : ''}<br><span class="t13 sub">${fmtBoxes(i.qty_boxes, i.pack_qty)} · ${fmtExact(i.unit_price)}</span></span><span>${fmtExact(i.unit_price * i.qty_boxes)}</span></div>`).join('')}
+      <div class="sumline"><span class="sub">배송비</span><span>${o.shipping_fee ? fmtExact(o.shipping_fee) : '0원'}</span></div>${o.discount ? `<div class="sumline"><span class="sub">할인</span><span>-${fmtExact(o.discount)}</span></div>` : ''}
+      <div class="sumline total"><span class="t13">총 ${orderBoxes(o)}박스</span><span>${fmtExact(o.total)}</span></div></div>${o.note ? `<p class="t13 sub">${esc(o.note)}</p>` : ''}</section>`;
+  const ev = o.events || [];
+  const hist = ev.length ? `<details class="dblock"><summary class="b clickable">처리 이력 ${ev.length}건</summary><ol class="hist">${ev.slice().reverse().map((e) => `<li><span class="t12 sub num">${fmtDate(e.at)}</span><span>${esc(e.text)}</span></li>`).join('')}</ol></details>` : '';
+  const tax = staff ? (o.tax_invoice ? `<section class="dblock"><h3>세금계산서</h3>${StatusChip(TAX, o.tax_invoice.status)} <span class="t13 sub">${esc(o.tax_invoice.buyer.company)} · ${fmtBizNo(o.tax_invoice.buyer.biz_no)}</span></section>` : '') : TaxBlock(o);
+  const acts = staff ? '' : `<div class="row">${o.items.length ? `<button class="btn secondary" data-act="reorder" data-o="${o.id}">현재 가격으로 다시 담기</button>` : ''}${o.status === 'pending_payment' ? `<button class="btn danger" data-act="askmycancel" data-o="${o.id}">주문 취소</button>` : ''}</div>`;
+  return `<div class="odetail">${head}${Progress(o)}${pay}${ship}${items}${tax}${hist}${acts}</div>`;
+}
+function TaxBlock(o) {
+  const t = o.tax_invoice;
+  if (o.pay_method === 'card') return `<section class="dblock"><h3>증빙</h3><p class="t13 sub">카드 결제 주문은 카드 매출전표가 증빙입니다.</p></section>`;
+  if (o.pay_method !== 'bank') return '';
+  const can = ['paid', 'preparing', 'shipped', 'delivered'].includes(o.status);
+  if (!t) return ['cancelled', 'refunded'].includes(o.status) ? '' : `<section class="dblock"><h3>세금계산서</h3>${can ? `<p class="t13 sub">필요하면 사업자 정보를 넣어 신청하세요. 운영자가 발행한 뒤 승인번호가 여기 기록됩니다.</p><button class="btn secondary start" data-act="taxreq" data-o="${o.id}">세금계산서 신청</button>` : '<p class="t13 sub">입금이 확인되면 신청할 수 있어요.</p>'}</section>`;
+  return `<section class="dblock"><h3>세금계산서</h3><div class="row">${StatusChip(TAX, t.status)}<span class="t13 sub">${esc(t.buyer.company)} · ${fmtBizNo(t.buyer.biz_no)}</span></div>
+    ${t.status === 'returned' ? `<p class="note warn">보완 요청: ${esc(t.note || '')}</p><button class="btn secondary start" data-act="taxreq" data-o="${o.id}">고쳐서 다시 신청</button>` : ''}
+    ${t.status === 'requested' ? `<p class="t13 sub">운영자가 확인하고 있습니다. 발행되면 승인번호가 기록됩니다.</p><button class="textbtn start" data-act="taxreq" data-o="${o.id}">신청 내용 고치기</button>` : ''}
+    ${t.status === 'issued' ? `<div class="sumline"><span class="sub">승인번호</span><span class="num">${esc(t.approval_no)}</span></div><div class="sumline"><span class="sub">공급가액 / 세액</span><span>${fmtExact(t.supply_amount)} / ${fmtExact(t.tax_amount)}</span></div><div class="sumline"><span class="sub">발행일</span><span>${fmtDay(t.issued_date)}</span></div>` : ''}</section>`;
+}
+function ownerOrderPage(a, me) {
+  const o = guard(() => a.getOrder(state.param));
+  if (!o || o.__error) return `<button class="textbtn backlink" data-act="nav" data-p="myorders">← 주문내역</button>` + EmptyState('주문을 찾을 수 없습니다', '주문내역에서 다시 열어 주세요.');
+  return `<button class="textbtn backlink" data-act="nav" data-p="myorders">← 주문내역</button><div class="card">${OrderDetail(a, o, false)}</div>`;
+}
+function ownerTax(a, me) {
+  const list = a.listTaxInvoices();
+  const can = a.listOrders().filter((o) => o.pay_method === 'bank' && ['paid', 'preparing', 'shipped', 'delivered'].includes(o.status) && !o.tax_invoice);
+  return PageHead('세금계산서', '계좌이체 주문만 신청할 수 있습니다. 카드 결제 주문은 카드 매출전표가 증빙입니다.', `${esc(me.brand_name)} · 증빙`) + OwnerTabs('mytax') +
+    (can.length ? `<section class="card"><h2>신청할 수 있는 주문</h2><div class="lines">${can.map((o) => `<div class="sumline"><span><b class="num">${esc(o.no)}</b><br><span class="t13 sub">${fmtDateOnly(o.created_at)} · ${firstItemText(o)} · ${fmtExact(o.total)}</span></span><button class="btn secondary sm" data-act="taxreq" data-o="${o.id}">신청</button></div>`).join('')}</div></section>` : '') +
+    (list.length ? `<div class="orderlist">${list.map((t) => `<article class="ocard"><div class="head"><div><button class="olink num" data-act="openorder" data-o="${t.order_id}">${esc(t.order_no || '')}</button><div class="t13 sub">${esc(t.buyer.company)} · ${fmtBizNo(t.buyer.biz_no)}</div></div>${StatusChip(TAX, t.status)}</div>
+        <div class="osum"><span class="t13 sub">신청 ${fmtDateOnly(t.created_at)}</span><b class="num">${fmtExact(t.order_total)}</b></div>
+        ${t.status === 'returned' ? `<p class="note warn">보완 요청: ${esc(t.note || '')}</p><button class="btn secondary sm start" data-act="taxreq" data-o="${t.order_id}">고쳐서 다시 신청</button>` : ''}
+        ${t.status === 'issued' ? `<div class="sumline"><span class="sub">승인번호</span><span class="num">${esc(t.approval_no)}</span></div>` : ''}</article>`).join('')}</div>`
+      : can.length ? '' : EmptyState('신청한 세금계산서가 없습니다', '입금이 확인된 계좌이체 주문에서 신청할 수 있어요.'));
 }
 const eqText = (qty, pack) => (pack ? `= <b>${(qty * pack).toLocaleString('ko-KR')}</b>개 (${pack.toLocaleString('ko-KR')}개입 × ${qty})` : `${qty}박스 · 입수량 미등록`);
 function ownerCart(a, me) {
-  const prods = a.listProducts();
-  const lines = Object.entries(state.cart).map(([k, l]) => { const p = prods.find((x) => x.id === l.product_id); return p ? { k, l, p, opt: p.options.find((o) => o.id === l.option_id) } : null; }).filter(Boolean);
-  const goods = lines.reduce((s, x) => s + x.p.price.price * x.l.qty, 0); const ship = db.settings.shipping_fee || 0;
-  const boxes = lines.reduce((s, x) => s + x.l.qty, 0);
-  if (!lines.length) return { html: PageHead('장바구니', '', esc(me.brand_name)) + EmptyState('담긴 상품이 없습니다', '', `<button class="btn" data-act="nav" data-p="shop">주문하러 가기</button>`), bar: '' };
-  const html = PageHead('장바구니', '', esc(me.brand_name)) + `<div class="cartgrid"><div class="cartlist">${lines.map(({ k, l, p, opt }) => `<div class="crow">${Thumb(p)}
+  const prods = a.listProducts(); const t = cartTotals(a, prods);
+  if (!t.lines.length) return { html: PageHead('장바구니', '', esc(me.brand_name)) + EmptyState('주문할 상품을 담아 주세요', '옵션과 박스 수량을 고른 뒤 담기를 누르세요.', `<button class="btn" data-act="nav" data-p="shop">주문하러 가기</button>`), bar: '' };
+  const html = PageHead('장바구니', '', esc(me.brand_name), `<button class="textbtn" data-act="askclearcart">전체 비우기</button>`) + `<div class="cartgrid"><div class="cartlist">${t.lines.map(({ k, l, p, opt }) => `<div class="crow">${Thumb(p)}
       <span class="cname">${esc(p.name)}${opt ? ` <span class="sub t14">(${esc(opt.name)})</span>` : ''}<br><span class="t13 sub" style="font-weight:500">${p.code ? esc(p.code) + ' · ' : ''}${packText(p.pack_qty)} · ${fmtExact(p.price.price)}</span></span>
       <span class="camt">${fmtExact(p.price.price * l.qty)}</span>
       <span class="cqty">${Stepper('cartqty', 'cartset', k, l.qty)}<span class="eq">${eqText(l.qty, p.pack_qty)}</span></span>
       <button class="textbtn cdel" data-act="cartdel" data-k="${k}">빼기</button></div>`).join('')}</div>
-    <aside class="sumbox"><h2 class="section-title">결제 금액</h2>
-      <div class="sumline"><span class="sub">상품 (${boxes}박스)</span><span>${fmtExact(goods)}</span></div><div class="sumline"><span class="sub">배송비</span><span>${ship ? fmtExact(ship) : '0원 (미정)'}</span></div>
-      <div class="sumline total"><span class="t13">총 ${boxes}박스 · 배송비 포함</span><span>${fmtExact(goods + ship)}</span></div>
-      <form data-form="order" id="order-form" class="stack s2"><span class="label">결제 방식</span>
-        <div class="opts"><label><input type="radio" name="pay" value="card" checked><span>카드</span></label><label><input type="radio" name="pay" value="bank"><span>계좌이체</span></label></div>
-        <p class="hint">시제품에서는 카드 결제가 바로 완료 처리됩니다. 실서비스에서는 PG 결제창이 열립니다.</p>
-        <button class="btn lg block order-btn" type="submit">${fmtExact(goods + ship)} 주문하기</button></form></aside></div>`;
-  const bar = `<div class="paybar"><div><span class="t12 sub">총 ${boxes}박스 · 배송비 포함</span><div class="tot">${fmtExact(goods + ship)}</div></div><button class="btn lg" type="submit" form="order-form">주문하기</button></div>`;
+    <aside class="sumbox"><h2 class="section-title">결제 예정 금액</h2>
+      <div class="sumline"><span class="sub">상품 (${t.boxes}박스)</span><span>${fmtExact(t.goods)}</span></div><div class="sumline"><span class="sub">배송비</span><span>${shipText(t)}</span></div>
+      ${FreeShip(t)}<div class="sumline total"><span class="t13">총 ${t.boxes}박스 · 배송비 포함</span><span>${fmtExact(t.total)}</span></div>
+      <p class="t12 sub">부가세 포함 · 다음 화면에서 배송지와 주문 금액을 확인합니다.</p>
+      <button class="btn lg block order-btn" data-act="nav" data-p="checkout">주문서 작성</button></aside></div>`;
+  const bar = `<div class="paybar"><div><span class="t12 sub">총 ${t.boxes}박스 · 배송비 포함</span><div class="tot">${fmtExact(t.total)}</div></div><button class="btn lg" data-act="nav" data-p="checkout">주문서 작성</button></div>`;
+  return { html, bar };
+}
+/** 배송지 기본값: 최근 주문 배송지 → 매장 정보 */
+function lastShipTo(a) { const o = a.listOrders().find((x) => x.ship_to && x.ship_to.addr1); return o ? { ...o.ship_to } : null; }
+function storeShipTo(me) { const s = db.stores.find((x) => x.id === me.store_id) || {}; return { name: s.name || '', phone: s.phone || '', zip: '', addr1: s.address || '', addr2: '', memo: '' }; }
+function ownerCheckout(a, me) {
+  const prods = a.listProducts(); const t = cartTotals(a, prods);
+  if (!t.lines.length) return { html: PageHead('주문서', '', esc(me.brand_name)) + EmptyState('담긴 상품이 없습니다', '상품을 담은 뒤 주문서를 작성해 주세요.', `<button class="btn" data-act="nav" data-p="shop">주문하러 가기</button>`), bar: '' };
+  if (!state.clientKey) state.clientKey = 'ck-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const d = state.shipDraft || lastShipTo(a) || storeShipTo(me);
+  const pay = state.payDraft || 'bank';
+  const info = a.publicInfo();
+  const btnText = pay === 'bank' ? '주문 접수 (입금 후 출고)' : `${fmtExact(t.total)} 결제하고 주문`;
+  const html = PageHead('주문서 확인', '배송지와 결제 방법을 확인한 뒤 주문을 접수합니다.', esc(me.brand_name)) +
+    `<form data-form="checkout" id="checkout-form" class="cartgrid" novalidate><div class="stack">
+      <section class="card"><div class="row between"><h2>배송지</h2><div class="row"><button type="button" class="btn secondary sm" data-act="lastship">최근 배송지 불러오기</button><button type="button" class="btn secondary sm" data-act="storeship">매장 정보로</button></div></div>
+        <div class="grid2">${Field('co-name', 'name', '받는 분', 'required autocomplete="name"', d.name)}${Field('co-phone', 'phone', '연락처', 'required inputmode="tel" autocomplete="tel" placeholder="010-0000-0000"', d.phone)}</div>
+        <div class="grid2">${Field('co-zip', 'zip', '우편번호 (선택)', 'inputmode="numeric" autocomplete="postal-code"', d.zip)}</div>
+        ${Field('co-addr1', 'addr1', '주소', 'required autocomplete="street-address"', d.addr1)}${Field('co-addr2', 'addr2', '상세 주소 (선택)', '', d.addr2)}
+        ${Field('co-memo', 'memo', '배송 메모 (선택)', 'placeholder="예: 영업 전 오전 10시까지 매장 앞"', d.memo)}</section>
+      <section class="card"><h2>결제 방법</h2><div class="opts"><label><input type="radio" name="pay" value="bank" ${pay === 'bank' ? 'checked' : ''} data-change="paydraft"><span>계좌이체</span></label><label><input type="radio" name="pay" value="card" ${pay === 'card' ? 'checked' : ''} data-change="paydraft"><span>카드</span></label></div>
+        ${pay === 'bank' ? `<div class="note">입금 계좌 <b>${esc(info.bank_account || '(운영자 안내 예정)')}</b><br>입금이 확인되면 출고를 시작합니다. 세금계산서는 계좌이체 주문에서 신청할 수 있어요.</div>`
+          : `<div class="note">카드 결제 주문은 카드 매출전표가 증빙입니다. ${LIVE ? '카드 결제창(PG)은 아직 연결 전입니다.' : '시제품에서는 바로 결제 완료로 처리됩니다.'}</div>`}</section>
+      <section class="card"><h2>약관 확인</h2><details class="terms"><summary class="clickable">이용약관 보기</summary><div class="legal t13">${esc(info.footer.terms || '아직 등록된 약관이 없습니다.')}</div></details>
+        <label class="check"><input type="checkbox" name="agree" value="1"> 주문 내용과 이용약관을 확인했습니다</label></section></div>
+    <aside class="sumbox"><h2 class="section-title">주문 상품</h2><div class="review">${t.lines.map(({ l, p, opt }) => `<div class="sumline"><span>${esc(p.name)}${opt ? ` <span class="sub">(${esc(opt.name)})</span>` : ''}<br><span class="t13 sub">${l.qty}박스 × ${fmtExact(p.price.price)}</span></span><span>${fmtExact(p.price.price * l.qty)}</span></div>`).join('')}</div>
+      <div class="sumline"><span class="sub">상품 (${t.boxes}박스)</span><span>${fmtExact(t.goods)}</span></div><div class="sumline"><span class="sub">배송비</span><span>${shipText(t)}</span></div>${FreeShip(t)}
+      <div class="sumline total"><span class="t13">총 결제 금액</span><span>${fmtExact(t.total)}</span></div><p class="t12 sub">부가세 포함 · 계약 단가 기준</p>
+      <button class="btn lg block order-btn" type="submit">${btnText}</button></aside></form>`;
+  const bar = `<div class="paybar"><div><span class="t12 sub">총 ${t.boxes}박스 · 배송비 포함</span><div class="tot">${fmtExact(t.total)}</div></div><button class="btn lg" type="submit" form="checkout-form">${pay === 'bank' ? '주문 접수' : '결제하고 주문'}</button></div>`;
   return { html, bar };
 }
 function productSheet(pid) {
@@ -2154,6 +2655,36 @@ function productSheet(pid) {
       <div class="sumline total"><span class="t13">${qty}박스</span><span>${fmtExact(p.price.price * qty)}</span></div>
       <button class="btn lg block" type="submit">장바구니 담기</button></form></div></div>`;
 }
+/** 지난 주문 다시 담기: 지금 가격·판매 여부를 확인하고 담는다 */
+function reorderSheet(oid) {
+  const a = api(); const o = guard(() => a.getOrder(oid)); if (!o || o.__error) return '';
+  const prods = a.listProducts();
+  const rows = o.items.map((i) => { const p = prods.find((x) => x.id === i.product_id); let why = '';
+    if (!p) why = '지금은 주문할 수 없는 상품이에요'; else if (p.options.length && !p.options.some((x) => x.id === i.option_id)) why = '옵션이 바뀌어 다시 골라야 해요';
+    return { i, p, why }; });
+  const ok = rows.filter((r) => !r.why); const sum = ok.reduce((s, r) => s + r.p.price.price * r.i.qty_boxes, 0);
+  const hasCart = Object.keys(state.cart).length > 0; const mode = state.modal.mode || 'add';
+  return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="지난 주문 다시 담기"><div class="sheethead"><h2>지난 주문 다시 담기</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <p class="t13 sub">${esc(o.no)} · ${fmtDateOnly(o.created_at)} — 현재 가격으로 담습니다. 지난 주문 금액과 다를 수 있어요.</p>
+    <div class="lines">${rows.map(({ i, p, why }) => `<div class="sumline ${why ? 'off' : ''}"><span>${esc(i.product_name)}${i.option_name ? ` <span class="sub">(${esc(i.option_name)})</span>` : ''}<br><span class="t13 ${why ? 'warntext' : 'sub'}">${why || `${i.qty_boxes}박스 × ${fmtExact(p.price.price)}${p.price.price !== i.unit_price ? ` (지난 단가 ${fmtExact(i.unit_price)})` : ''}`}</span></span><span>${why ? '-' : fmtExact(p.price.price * i.qty_boxes)}</span></div>`).join('')}
+      <div class="sumline total"><span class="t13">${ok.length}개 품목</span><span>${fmtExact(sum)}</span></div></div>
+    ${hasCart ? `<div class="seg wide" role="group" aria-label="담는 방법" style="--n:2;--i:${mode === 'replace' ? 1 : 0}"><button data-act="reordermode" data-v="add" aria-pressed="${mode !== 'replace'}">기존 장바구니에 추가</button><button data-act="reordermode" data-v="replace" aria-pressed="${mode === 'replace'}">장바구니 바꾸기</button></div>` : ''}
+    <button class="btn lg block" data-act="doreorder" data-o="${o.id}" ${ok.length ? '' : 'disabled'}>확인하고 담기</button></div>`;
+}
+function taxReqSheet(oid) {
+  const a = api(); const o = guard(() => a.getOrder(oid)); if (!o || o.__error) return '';
+  const me = a.me(); const s = db.stores.find((x) => x.id === me.store_id) || {};
+  const prev = (o.tax_invoice && o.tax_invoice.buyer) || ((a.listTaxInvoices()[0] || {}).buyer) || { biz_no: s.biz_no || '', company: s.name ? `${me.brand_name} ${s.name}` : '', ceo: s.ceo || '', address: s.address || '' };
+  return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="세금계산서 신청"><div class="sheethead"><h2>세금계산서 신청</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <p class="t13 sub">${esc(o.no)} · ${fmtExact(o.total)}</p>
+    <form data-form="taxreq" class="stack"><input type="hidden" name="oid" value="${o.id}">
+      ${Field('tx-biz', 'biz_no', '사업자등록번호', 'required inputmode="numeric" placeholder="000-00-00000"', fmtBizNo(prev.biz_no))}
+      <div class="grid2">${Field('tx-co', 'company', '상호', 'required', prev.company)}${Field('tx-ceo', 'ceo', '대표자', 'required', prev.ceo)}</div>
+      ${Field('tx-addr', 'address', '사업장 주소', 'required', prev.address)}
+      <div class="grid2">${Field('tx-type', 'biz_type', '업태 (선택)', 'placeholder="예: 음식점업"', prev.biz_type || '')}${Field('tx-item', 'biz_item', '종목 (선택)', 'placeholder="예: 한식"', prev.biz_item || '')}</div>
+      ${Field('tx-email', 'email', '받을 이메일 (선택)', 'type="email" autocomplete="email"', prev.email || '')}
+      <button class="btn lg block" type="submit">신청하기</button></form></div>`;
+}
 
 /* ---------- 운영자·개발자 ---------- */
 function renderStaff(page) {
@@ -2162,7 +2693,7 @@ function renderStaff(page) {
     home: () => staffHome(a),
     sales: () => PageHead('매출', '전체 또는 브랜드를 골라 기준 월에서 거꾸로 1~4개월을 봅니다. 총매출은 각 달을 한 번씩만 더합니다.') + SalesView(null),
     boxes: () => staffBoxes(a), payback: () => staffPayback(a), approvals: () => staffApprovals(a), brands: () => staffBrands(a),
-    orders: () => staffOrders(a), notices: () => staffNotices(a), products: () => staffProducts(a), prices: () => staffPrices(a),
+    orders: () => staffOrders(a), taxinvoices: () => staffTax(a), payouts: () => staffPayouts(a), notices: () => staffNotices(a), products: () => staffProducts(a), prices: () => staffPrices(a),
     audit: () => PageHead('감사 로그', '승인·가격 변경·페이백 기준 변경·월 마감을 누가 언제 했는지 남깁니다.') + `<div class="tablewrap"><table class="tbl"><thead><tr><th>시각</th><th>누가</th><th>무엇</th><th>대상</th><th>내용</th></tr></thead><tbody>
       ${a.auditLogs().slice(0, 200).map((l) => `<tr><td class="nw num t13">${fmtDate(l.at)}</td><td class="nw">${esc(l.user_name)} <span class="t12 sub">${ROLE[l.role]}</span></td><td class="nw b">${esc(l.action)}</td><td>${esc(l.target)}</td><td class="t13">${esc(l.detail)}</td></tr>`).join('') || `<tr><td colspan="5" class="sub">아직 기록이 없습니다.</td></tr>`}</tbody></table></div>`,
     settings: () => staffSettings(a), qa: () => staffQA(a), design: () => staffDesign(), devsettings: () => staffDev(a),
@@ -2179,7 +2710,7 @@ function staffBoxes(a) {
   const prods = db.products.filter((p) => active.some((r) => r.boxes[p.id]));
   const sumBoxes = (r) => Object.values(r.boxes).reduce((s, v) => s + v, 0);
   return PageHead('품목별 박스', '월·브랜드별로 실제로 나간 박스 수입니다. 금액이 아니라 박스로 셉니다. 환불된 박스는 빠집니다.') +
-    `<div class="toolbar">${monthInput('boxes-m', state.boxesMonth, 'boxesMonth', '조회 월')}${virtSeg()}<span class="t13 sub">집계 시점: ${BASIS_LABEL[db.settings.revenue.basis]} · 한국 시간</span></div>
+    `<div class="toolbar">${monthInput('boxes-m', state.boxesMonth, 'boxesMonth', '조회 월')}${virtSeg()}<span class="t13 sub">집계 시점: ${BASIS_LABEL[db.settings.revenue.basis]} · 한국 시간</span><button class="btn secondary sm" data-act="csvboxes">CSV 내려받기</button></div>
     ${active.length ? `<div class="tablewrap"><table class="tbl"><thead><tr><th>품목</th>${active.map((r) => `<th class="r">${esc(r.brand_name)}</th>`).join('')}<th class="r">합계</th></tr></thead><tbody>
     ${prods.map((p) => { const tot = active.reduce((s, r) => s + (r.boxes[p.id] || 0), 0); return `<tr><td>${esc(p.name)}<div class="t12 sub">${packText(p.pack_qty)}</div></td>${active.map((r) => `<td class="r">${r.boxes[p.id] ? r.boxes[p.id].toLocaleString('ko-KR') + '박스' : '<span class="sub">-</span>'}</td>`).join('')}<td class="r b">${tot.toLocaleString('ko-KR')}박스</td></tr>`; }).join('')}
     </tbody><tfoot><tr><td>합계</td>${active.map((r) => `<td class="r">${sumBoxes(r).toLocaleString('ko-KR')}박스</td>`).join('')}<td class="r">${active.reduce((s, r) => s + sumBoxes(r), 0).toLocaleString('ko-KR')}박스</td></tr></tfoot></table></div>`
@@ -2199,7 +2730,7 @@ function staffPayback(a) {
       ${cur ? (cur.method === 'A' ? `<p>방식 A · 정산 대상 매출 × <b>${cur.rate}%</b></p>` : `<p>방식 B · 품목별 박스당 금액 (${Object.values(cur.per_box).filter((v) => v != null).length}개 품목)</p>`) : '<p class="sub">아직 정산 기준이 없습니다.</p>'}
       ${hist.length ? `<p class="t13 sub">${hist.map((h) => `${h.effective_from}부터 ${h.method === 'A' ? `A ${h.rate}%` : 'B'}`).join(' · ')}</p>` : ''}</section>`; }).join('');
   return PageHead('페이백·마감', '페이백은 본사(브랜드)에 정산하는 금액입니다. 주문 시점의 기준이 주문마다 저장되므로, 기준을 바꿔도 지난 주문과 마감된 달은 바뀌지 않습니다. 송금은 자동으로 하지 않습니다.') +
-    `<div class="toolbar">${monthInput('settle-m', state.settleMonth, 'settleMonth', '정산 월')}${virtSeg()}</div>
+    `<div class="toolbar">${monthInput('settle-m', state.settleMonth, 'settleMonth', '정산 월')}${virtSeg()}<button class="btn secondary sm" data-act="csvsettle">CSV 내려받기</button><button class="btn secondary sm" data-act="nav" data-p="payouts">이체 기록으로 →</button></div>
     <div class="tablewrap"><table class="tbl"><thead><tr><th>브랜드</th><th>방식</th><th class="r">정산 대상 매출</th><th class="r">페이백</th><th class="r">부가세</th><th class="r">합계</th><th>상태</th></tr></thead><tbody>${tbody}</tbody>
       <tfoot><tr><td colspan="2">합계</td><td class="r">${fmtExact(tot.amount)}</td><td class="r">${fmtExact(tot.payback)}</td><td class="r">${fmtExact(tot.vat)}</td><td class="r">${fmtExact(tot.payback + tot.vat)}</td><td></td></tr></tfoot></table></div>
     <p class="hint">반올림은 브랜드·월 정산 단위에서 원 미만 사사오입으로 한 번만 합니다. 부가세는 시트처럼 페이백의 10%를 따로 붙입니다.</p>
@@ -2254,26 +2785,190 @@ function staffBrands(a) {
       <div class="row"><form data-form="rename" class="row"><input type="hidden" name="bid" value="${b.id}"><input class="sm-input" name="name" aria-label="새 브랜드명" placeholder="새 이름"><button class="btn secondary sm" type="submit">이름 변경</button></form>${LIVE ? `<form data-form="assignadmin" class="row"><input type="hidden" name="bid" value="${b.id}"><input class="sm-input" name="email" type="email" required placeholder="관리자 이메일" aria-label="관리자로 지정할 이메일" style="width:180px"><button class="btn secondary sm" type="submit">관리자 지정</button></form>` : b.admins.length ? '' : `<button class="btn secondary sm" data-act="addadmin" data-b="${b.id}">관리자 계정 만들기</button>`}</div></div>
       ${InviteCard(b.id, true)}</section>`).join('')}`;
 }
+/* ---------- CSV 내려받기 (엑셀에서 바로 열리게 BOM, 수식 주입 막기) ---------- */
+function downloadCsv(name, header, rows) {
+  const cell = (v) => { let s = String(v ?? ''); if (/^[=+\-@]/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const csv = '﻿' + [header, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+  try {
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const el = document.createElement('a'); el.href = url; el.download = name; document.body.appendChild(el); el.click(); el.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000); toast(`${name} 파일을 내려받았습니다.`);
+  } catch (e) { toast('이 브라우저에서는 파일을 내려받지 못했습니다. PC에서 다시 시도해 주세요.'); }
+}
+const csvStamp = () => kstDay(new Date().toISOString()).replace(/-/g, '');
+
+/* ---------- 주문·배송 (운영자) ---------- */
+const QUICK = [['', '전체', () => true], ['pending_payment', '입금 대기', (o) => o.status === 'pending_payment'], ['paid', '결제 확인', (o) => o.status === 'paid'],
+  ['preparing', '배송 준비', (o) => o.status === 'preparing'], ['shipped', '배송 중', (o) => o.status === 'shipped'], ['delivered', '배송 완료', (o) => o.status === 'delivered'],
+  ['cancel', '취소·환불', (o) => ['cancelled', 'refunded'].includes(o.status)]];
+function staffOrderList(a) {
+  const f = state.of; const base = a.listOrders({ brand_id: f.brand });
+  const q = (f.q || '').trim().toLowerCase();
+  const since = f.period ? new Date(Date.now() - Number(f.period) * 30 * 86400000).toISOString() : '';
+  const matchQ = (o) => !q || [o.no, o.store_name, o.brand_name, o.shipment && o.shipment.tracking_no, o.ship_to && o.ship_to.name, ...o.items.map((i) => `${i.product_name} ${i.option_name || ''}`)].some((v) => String(v || '').toLowerCase().includes(q));
+  const pre = base.filter((o) => (!since || o.created_at >= since) && matchQ(o));
+  const quick = QUICK.find((x) => x[0] === f.quick) || QUICK[0];
+  return { base, pre, list: pre.filter(quick[2]) };
+}
 function staffOrders(a) {
-  const all = a.listOrders({ brand_id: state.orderFilter.brand, status: state.orderFilter.status });
-  const list = all.slice(0, state.orderLimit);
-  const brands = a.listBrands();
-  return PageHead('주문·송장', '계좌이체 주문은 입금을 확인해야 결제 완료로 집계됩니다. 송장을 넣으면 점주 화면에 바로 보입니다.') +
-    `<div class="toolbar">${Select('of-brand', 'ofbrand', [['', '전체 브랜드'], ...brands.map((b) => [b.id, b.name])], state.orderFilter.brand, '브랜드', 'line')}
-      ${Select('of-status', 'ofstatus', [['', '전체 상태'], ...Object.entries(STATUS).map(([k, [l]]) => [k, l])], state.orderFilter.status, '상태', 'line')}<span class="t13 sub">${all.length.toLocaleString('ko-KR')}건</span></div>
+  const f = state.of; const { pre, list } = staffOrderList(a);
+  const shown = list.slice(0, state.orderLimit); const brands = a.listBrands();
+  const sel = Object.keys(state.sel).filter((id) => list.some((o) => o.id === id));
+  const allOn = shown.length > 0 && shown.every((o) => state.sel[o.id]);
+  const count = (fn) => pre.filter(fn).length;
+  const short = [['pending_payment', '입금 확인 대기'], ['paid', '배송 준비 대기'], ['preparing', '송장 미등록'], ['shipped', '배송 중']];
+  const actions = (o) => `<div class="cell-actions">
+      ${o.status === 'pending_payment' ? `<button class="btn sm" data-act="paid" data-o="${o.id}">입금 확인</button><form data-form="discount" class="row"><input type="hidden" name="oid" value="${o.id}"><input class="sm-input narrow" name="amount" inputmode="numeric" placeholder="할인 금액" aria-label="할인 금액"><button class="btn secondary sm" type="submit">할인</button></form>` : ''}
+      ${o.status === 'paid' ? `<button class="btn secondary sm" data-act="prep1" data-o="${o.id}">배송 준비</button>` : ''}
+      ${['paid', 'preparing', 'shipped'].includes(o.status) ? `<form data-form="ship" class="row"><input type="hidden" name="oid" value="${o.id}"><input class="sm-input narrow" name="carrier" list="carriers" placeholder="택배사" aria-label="택배사" value="${esc(o.shipment ? o.shipment.carrier : '')}"><input class="sm-input" name="tracking" placeholder="송장번호" aria-label="송장번호" value="${esc(o.shipment ? o.shipment.tracking_no : '')}"><button class="btn sm" type="submit">${o.shipment ? '수정' : '송장 입력'}</button></form>` : ''}
+      ${o.status === 'shipped' ? `<button class="btn secondary sm" data-act="deliver" data-o="${o.id}">배송 완료</button>` : ''}
+      ${!['cancelled', 'refunded'].includes(o.status) ? `<button class="textbtn" data-act="askcancel" data-o="${o.id}">취소·환불</button>` : ''}</div>`;
+  return PageHead('주문·배송', '입금 확인 → 배송 준비 → 송장 입력(배송 중) → 배송 완료 순서로 처리합니다. 여러 건을 골라 한 번에 바꾸거나, 엑셀에서 송장을 붙여넣을 수 있습니다.', '',
+      `<div class="row"><button class="btn secondary sm" data-act="bulkship">송장 일괄 입력</button><button class="btn secondary sm" data-act="csvorders">CSV 내려받기</button></div>`) +
+    `<div class="kpis">${short.map(([k, l]) => `<button class="kpi ${f.quick === k ? 'on' : ''}" data-act="ofquick" data-v="${k}"><span class="label">${l}</span><b>${count((o) => o.status === k)}<small>건</small></b></button>`).join('')}</div>
+    <div class="cats" role="group" aria-label="주문 단계">${QUICK.map(([k, l, fn]) => `<button data-act="ofquick" data-v="${k}" aria-pressed="${(f.quick || '') === k}">${l}<span class="n">${count(fn)}</span></button>`).join('')}</div>
+    <form data-form="ofsearch" class="toolbar"><label class="search grow">${ICON.search}<input type="search" name="q" value="${esc(f.q || '')}" placeholder="주문번호 · 매장 · 상품 · 송장 · 받는 분" aria-label="주문 검색"></label>
+      ${Select('of-brand', 'ofbrand', [['', '전체 브랜드'], ...brands.map((b) => [b.id, b.name])], f.brand, '브랜드', 'line')}
+      ${Select('of-period', 'ofperiod', [['', '전체 기간'], ['1', '최근 1개월'], ['3', '최근 3개월']], f.period, '기간', 'line')}<button class="btn secondary sm" type="submit">조회</button>
+      ${f.q || f.brand || f.period || f.quick ? `<button type="button" class="textbtn" data-act="resetorders">초기화</button>` : ''}<span class="t13 sub">${list.length.toLocaleString('ko-KR')}건</span></form>
     <datalist id="carriers">${(db.settings.carriers || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
-    ${all.length ? `<div class="tablewrap"><table class="tbl"><thead><tr><th>주문</th><th>매장</th><th>품목</th><th class="r">금액</th><th>상태</th><th>처리</th></tr></thead><tbody>
-    ${list.map((o) => { const boxes = o.items.reduce((s, i) => s + i.qty_boxes, 0);
-      return `<tr><td class="nw"><b class="num">${esc(o.no)}</b><div class="t12 sub">${fmtDate(o.created_at)} · ${PAY[o.pay_method]}</div></td><td class="nw">${esc(o.brand_name)}<div class="t12 sub">${esc(o.store_name)}</div></td>
-      <td class="t13">${o.items.slice(0, 3).map((i) => `${esc(i.product_name)}${i.option_name ? `(${esc(i.option_name)})` : ''} ${i.qty_boxes}박스`).join('<br>')}${o.items.length > 3 ? `<br><span class="sub">외 ${o.items.length - 3}개 · 총 ${boxes}박스</span>` : ''}</td>
-      <td class="r">${fmtExact(o.total)}${o.discount ? `<div class="t12 sub">할인 ${fmtExact(o.discount)}</div>` : ''}</td><td class="nw">${StatusChip(STATUS, o.status)}${o.shipment ? `<div class="t12 mono">${esc(o.shipment.carrier)} ${esc(o.shipment.tracking_no)}</div>` : ''}</td>
-      <td><div class="cell-actions">${o.status === 'pending_payment' ? `<button class="btn sm" data-act="paid" data-o="${o.id}">입금 확인</button><form data-form="discount" class="row"><input type="hidden" name="oid" value="${o.id}"><input class="sm-input narrow" name="amount" inputmode="numeric" placeholder="할인 금액" aria-label="할인 금액"><button class="btn secondary sm" type="submit">할인</button></form>` : ''}
-        ${['paid', 'shipped'].includes(o.status) ? `<form data-form="ship" class="row"><input type="hidden" name="oid" value="${o.id}"><input class="sm-input narrow" name="carrier" list="carriers" placeholder="택배사" aria-label="택배사" value="${esc(o.shipment ? o.shipment.carrier : '')}"><input class="sm-input" name="tracking" placeholder="송장번호" aria-label="송장번호" value="${esc(o.shipment ? o.shipment.tracking_no : '')}"><button class="btn sm" type="submit">${o.shipment ? '수정' : '송장 입력'}</button></form>` : ''}
-        ${o.status === 'shipped' ? `<button class="btn secondary sm" data-act="deliver" data-o="${o.id}">배송 완료</button>` : ''}
-        ${!['cancelled', 'refunded'].includes(o.status) ? `<button class="textbtn" data-act="askcancel" data-o="${o.id}">취소·환불</button>` : ''}</div></td></tr>`; }).join('')}
-    </tbody></table></div>${all.length > list.length ? `<button class="btn secondary more" data-act="moreorders">${(all.length - list.length).toLocaleString('ko-KR')}건 더 보기</button>` : ''}`
+    ${sel.length ? `<div class="bulkbar" role="region" aria-label="선택한 주문 처리"><b>${sel.length}건 선택</b><div class="row"><button class="btn sm" data-act="bulkst" data-v="paid">입금 확인</button><button class="btn sm" data-act="bulkst" data-v="preparing">배송 준비</button><button class="btn sm" data-act="bulkst" data-v="delivered">배송 완료</button><button class="btn secondary sm" data-act="bulkship">송장 일괄 입력</button><button class="textbtn" data-act="selclear">선택 해제</button></div></div>` : ''}
+    ${list.length ? `<div class="tablewrap"><table class="tbl rtable"><thead><tr><th class="ck"><input type="checkbox" data-change="selall" ${allOn ? 'checked' : ''} aria-label="보이는 주문 모두 선택"></th><th>주문</th><th>매장</th><th>품목</th><th class="r">금액</th><th>상태</th><th>처리</th></tr></thead><tbody>
+    ${shown.map((o) => `<tr class="${state.sel[o.id] ? 'sel' : ''}"><td class="ck"><input type="checkbox" data-change="selorder" data-o="${o.id}" ${state.sel[o.id] ? 'checked' : ''} aria-label="${esc(o.no)} 선택"></td>
+      <td class="nw" data-label="주문"><button class="olink num" data-act="staffopen" data-o="${o.id}">${esc(o.no)}</button><div class="t12 sub">${fmtDate(o.created_at)} · ${PAY[o.pay_method]}</div></td>
+      <td class="nw" data-label="매장">${esc(o.brand_name)}<div class="t12 sub">${esc(o.store_name)}${o.ship_to ? ` · ${esc(o.ship_to.name)}` : ''}</div></td>
+      <td class="t13" data-label="품목">${o.items.slice(0, 3).map((i) => `${esc(i.product_name)}${i.option_name ? `(${esc(i.option_name)})` : ''} ${i.qty_boxes}박스`).join('<br>')}${o.items.length > 3 ? `<br><span class="sub">외 ${o.items.length - 3}개 · 총 ${orderBoxes(o)}박스</span>` : ''}</td>
+      <td class="r" data-label="금액">${fmtExact(o.total)}${o.discount ? `<div class="t12 sub">할인 ${fmtExact(o.discount)}</div>` : ''}</td>
+      <td class="nw" data-label="상태">${StatusChip(STATUS, o.status)}${o.shipment ? `<div class="t12 mono">${esc(o.shipment.carrier)} ${esc(o.shipment.tracking_no)}</div>` : ''}${o.tax_invoice && o.tax_invoice.status !== 'issued' ? `<div>${Chip('세금계산서 ' + TAX[o.tax_invoice.status][0], TAX[o.tax_invoice.status][1])}</div>` : ''}</td>
+      <td data-label="처리">${actions(o)}</td></tr>`).join('')}
+    </tbody></table></div>${list.length > shown.length ? `<button class="btn secondary more" data-act="moreorders">${(list.length - shown.length).toLocaleString('ko-KR')}건 더 보기</button>` : ''}`
     : EmptyState('조건에 맞는 주문이 없습니다', '', `<button class="btn secondary" data-act="resetorders">필터 초기화</button>`)}`;
 }
+function ordersCsv(a) {
+  const { list } = staffOrderList(a);
+  downloadCsv(`주문_${csvStamp()}.csv`, ['주문번호', '주문일시', '브랜드', '매장', '상태', '결제', '품목', '박스', '상품 금액', '배송비', '할인', '합계', '받는 분', '연락처', '주소', '택배사', '송장번호'],
+    list.map((o) => [o.no, fmtDate(o.created_at), o.brand_name, o.store_name, STATUS[o.status][0], PAY[o.pay_method], o.items.map((i) => `${i.product_name}${i.option_name ? `(${i.option_name})` : ''} ${i.qty_boxes}박스`).join(' / '),
+      orderBoxes(o), o.items.reduce((s, i) => s + i.unit_price * i.qty_boxes, 0), o.shipping_fee || 0, o.discount || 0, o.total,
+      o.ship_to ? o.ship_to.name : '', o.ship_to ? o.ship_to.phone : '', o.ship_to ? `${o.ship_to.addr1} ${o.ship_to.addr2 || ''}`.trim() : '', o.shipment ? o.shipment.carrier : '', o.shipment ? o.shipment.tracking_no : '']));
+}
+/** 붙여넣은 송장 줄 읽기: 주문번호·택배사·송장번호 (택배사 칸이 없으면 공통 택배사) */
+function parseTracking(text, common) {
+  return String(text || '').split(/\r?\n/).map((ln) => ln.trim()).filter(Boolean).map((ln) => {
+    let parts = ln.split(/\t|,/).map((x) => x.trim()).filter(Boolean);
+    if (parts.length < 2) parts = ln.split(/\s+/);
+    if (parts.length === 2) return { no: parts[0], carrier: String(common || '').trim(), tracking_no: parts[1] };
+    return { no: parts[0], carrier: parts[1], tracking_no: parts.slice(2).join('') };
+  }).filter((r) => r.no && !/^주문/.test(r.no));
+}
+function reviewTracking(rows) {
+  const seen = {};
+  return rows.map((r) => {
+    const o = db.orders.find((x) => x.no === r.no && !x.is_virtual); const s = o && db.shipments.find((x) => x.order_id === o.id);
+    let err = '', warn = '', change = '';
+    if (!o) err = '주문번호를 찾을 수 없습니다';
+    else if (!['paid', 'preparing', 'shipped'].includes(o.status)) err = `${STATUS[o.status][0]} 주문이라 넣을 수 없습니다`;
+    else if (!r.carrier || !r.tracking_no) err = '택배사와 송장번호를 모두 넣어 주세요';
+    if (!err) {
+      if (s && (s.carrier !== r.carrier || s.tracking_no !== r.tracking_no)) change = `${s.carrier} ${s.tracking_no} → 바뀜`;
+      else if (s) warn = '이미 같은 송장이 있습니다';
+      const dupOther = db.shipments.find((x) => x.tracking_no === r.tracking_no && (!o || x.order_id !== o.id));
+      if (dupOther || seen[r.tracking_no]) warn = '같은 송장번호가 다른 주문에도 있습니다';
+    }
+    seen[r.tracking_no] = true;
+    return { ...r, store: o ? ((dbIndex(db).stores.get(o.store_id) || {}).name || '') : '', err, warn, change };
+  });
+}
+function bulkShipSheet() {
+  const m = state.modal;
+  if (!m.rows) {
+    const pre = Object.keys(state.sel).map((id) => db.orders.find((o) => o.id === id)).filter((o) => o && ['paid', 'preparing', 'shipped'].includes(o.status)).map((o) => o.no);
+    return `<div class="sheet" role="dialog" aria-modal="true" aria-label="송장 일괄 입력"><div class="sheethead"><h2>송장 일괄 입력</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+      <form data-form="bulkparse" class="stack"><div class="field"><label class="label" for="bs-car">공통 택배사 (줄에 택배사가 없을 때)</label><input id="bs-car" name="carrier" list="carriers-bs" value="${esc(m.carrier || (db.settings.carriers || [])[0] || '')}" placeholder="예: CJ대한통운"></div>
+        <datalist id="carriers-bs">${(db.settings.carriers || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+        <div class="field"><label class="label" for="bs-text">엑셀에서 붙여넣기</label><textarea id="bs-text" name="text" rows="8" placeholder="주문번호 [탭] 택배사 [탭] 송장번호&#10;MO-261009-AB12	CJ대한통운	600011112222&#10;MO-261009-CD34	600011113333">${esc(m.text || (pre.length ? pre.map((n) => n + '\t').join('\n') : ''))}</textarea></div>
+        <p class="hint">엑셀에서 주문번호·택배사·송장번호 세 칸을 복사해 붙여넣으세요. 두 칸(주문번호·송장번호)이면 위 공통 택배사를 씁니다. 저장 전에 한 번 더 확인합니다.</p>
+        <button class="btn lg block" type="submit">검토하기</button></form></div>`;
+  }
+  const rows = reviewTracking(m.rows); const ok = rows.filter((r) => !r.err);
+  return `<div class="sheet" role="dialog" aria-modal="true" aria-label="송장 저장 전 검토"><div class="sheethead"><h2>저장 전 검토</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <p class="t13">${ok.length}건 저장 가능${rows.length - ok.length ? ` · <span class="warntext">${rows.length - ok.length}건 제외</span>` : ''}</p>
+    <div class="tablewrap"><table class="tbl"><thead><tr><th>주문번호</th><th>택배사 · 송장번호</th><th>확인</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr><td class="nw"><b class="num">${esc(r.no)}</b><div class="t12 sub">${esc(r.store)}</div></td><td class="t13">${esc(r.carrier)} ${esc(r.tracking_no)}</td>
+        <td class="t13">${r.err ? `<span class="warntext">✕ ${esc(r.err)}</span>` : r.change ? `변경 · <span class="sub">${esc(r.change)}</span>` : '새로 등록'}${r.warn ? `<div class="warntext">⚠ ${esc(r.warn)}</div>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="row end"><button class="btn secondary" data-act="bulkback">다시 붙여넣기</button><button class="btn" data-act="bulksave" ${ok.length ? '' : 'disabled'}>${ok.length}건 저장</button></div></div>`;
+}
+function orderViewSheet(oid) {
+  const a = api(); const o = guard(() => a.getOrder(oid)); if (!o || o.__error) return '';
+  return `<div class="sheet" role="dialog" aria-modal="true" aria-label="주문 상세"><div class="sheethead"><span class="label">주문 상세</span><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>${OrderDetail(a, o, true)}</div>`;
+}
+
+/* ---------- 세금계산서 (운영자) ---------- */
+function staffTax(a) {
+  const all = a.listTaxInvoices(); const f = state.taxFilter;
+  const F = [['requested', '발행 요청'], ['returned', '보완 요청'], ['issued', '발행 완료'], ['', '전체']];
+  const list = all.filter((t) => !f || t.status === f);
+  return PageHead('세금계산서', '가맹점이 계좌이체 주문에 신청한 내역입니다. 홈택스 등에서 직접 발행한 뒤 승인번호를 기록합니다. 앱이 국세청에 발행하지는 않습니다.') +
+    `<div class="cats" role="group" aria-label="세금계산서 상태">${F.map(([k, l]) => `<button data-act="taxfilter" data-v="${k}" aria-pressed="${f === k}">${l}<span class="n">${all.filter((t) => !k || t.status === k).length}</span></button>`).join('')}</div>
+    ${list.length ? `<div class="tablewrap"><table class="tbl rtable"><thead><tr><th>신청</th><th>받는 사업자</th><th class="r">금액</th><th>상태</th><th>처리</th></tr></thead><tbody>
+      ${list.map((t) => `<tr><td class="nw" data-label="신청"><button class="olink num" data-act="staffopen" data-o="${t.order_id}">${esc(t.order_no || '')}</button><div class="t12 sub">${fmtDateOnly(t.updated_at)} · ${esc(t.brand_name)} ${esc(t.store_name)}</div></td>
+        <td data-label="받는 사업자"><b>${esc(t.buyer.company)}</b><div class="t12 sub">${fmtBizNo(t.buyer.biz_no)} · ${esc(t.buyer.ceo)}${t.buyer.biz_type ? ` · ${esc(t.buyer.biz_type)}/${esc(t.buyer.biz_item || '')}` : ''}</div><div class="t12 sub">${esc(t.buyer.address)}${t.buyer.email ? ` · ${esc(t.buyer.email)}` : ''}</div></td>
+        <td class="r" data-label="금액">${fmtExact(t.order_total)}</td>
+        <td data-label="상태">${StatusChip(TAX, t.status)}${t.status === 'returned' ? `<div class="t12 sub">${esc(t.note || '')}</div>` : ''}${t.status === 'issued' ? `<div class="t12 mono">${esc(t.approval_no)}</div>` : ''}</td>
+        <td data-label="처리">${t.status === 'requested' ? `<div class="cell-actions"><button class="btn sm" data-act="taxissue" data-o="${t.order_id}">발행 기록</button>
+          <form data-form="taxreturn" class="row"><input type="hidden" name="oid" value="${t.order_id}"><input class="sm-input" name="note" placeholder="보완할 내용" aria-label="보완할 내용"><button class="btn secondary sm" type="submit">보완 요청</button></form></div>` : t.status === 'returned' ? '<span class="t13 sub">점주가 고치는 중</span>' : `<span class="t13 sub">${fmtDay(t.issued_date || '')}</span>`}</td></tr>`).join('')}
+    </tbody></table></div>` : EmptyState(f === 'requested' ? '처리할 신청이 없습니다' : '해당하는 내역이 없습니다', '')}`;
+}
+function taxIssueSheet(oid) {
+  const t = (api().listTaxInvoices() || []).find((x) => x.order_id === oid); if (!t) return '';
+  const supply = Math.round(t.order_total / 1.1);
+  return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="발행 기록"><div class="sheethead"><h2>발행 기록</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <p class="t13 sub">${esc(t.order_no || '')} · ${esc(t.buyer.company)} · 주문 금액 <b>${fmtExact(t.order_total)}</b></p>
+    <form data-form="taxissue" class="stack"><input type="hidden" name="oid" value="${oid}">
+      ${Field('ti-ap', 'approval', '승인번호 (24자리)', 'required autocomplete="off" placeholder="20261009-41000000-12345678"')}
+      <div class="grid2">${Field('ti-sup', 'supply', '공급가액 (원)', 'required inputmode="numeric"', supply)}${Field('ti-tax', 'tax', '세액 (원)', 'required inputmode="numeric"', t.order_total - supply)}</div>
+      ${Field('ti-date', 'date', '발행일', 'type="date" required', kstDay(new Date().toISOString()))}
+      <p class="hint">공급가액과 세액의 합은 주문 금액과 같아야 합니다. 기록하면 점주 화면에 승인번호가 보입니다.</p>
+      <button class="btn lg block" type="submit">발행 완료로 기록</button></form></div>`;
+}
+
+/* ---------- 페이백 지급: 수취계좌 → 지급할 달 → 이체 기록 ---------- */
+function staffPayouts(a) {
+  const brands = a.listBrands(); if (!brands.some((b) => b.id === state.payBrand) && brands[0]) state.payBrand = brands[0].id;
+  const bid = state.payBrand; const b = brands.find((x) => x.id === bid); if (!b) return PageHead('페이백 지급', '') + EmptyState('브랜드가 없습니다', '');
+  const acc = a.getBrandAccount(bid); const paid = a.listPayouts(); const mine = paid.filter((p) => p.brand_id === bid);
+  const months = []; for (let k = 1; k <= 6; k++) months.push(addMonths(nowMonth(), -k));
+  const rows = months.map((m) => ({ m, r: a.settlement(m, false).find((x) => x.brand_id === bid), p: mine.find((x) => x.month === m) }));
+  const pick = rows.find((x) => x.m === state.payMonth && x.r.closed && !x.p && x.r.payback + x.r.payback_vat > 0);
+  const lastPaid = mine[0];
+  const adj = lastPaid ? rows.filter((x) => x.m > lastPaid.month && x.r.adjustments) : [];
+  const nowLocal = (() => { const p = kstParts(new Date().toISOString()); return `${p.y}-${pad2(p.m)}-${pad2(p.d)}T${pad2(p.hh)}:${pad2(p.mi)}`; })();
+  return PageHead('페이백 지급', '금액 확인 → 은행에서 직접 이체 → 이체 완료 기록. 앱은 송금하지 않습니다. 마감한 달의 고정된 금액만 기록할 수 있고, 기록은 고칠 수 없습니다.') +
+    `<div class="toolbar">${Select('pay-brand', 'paybrand', brands.map((x) => [x.id, x.name]), bid, '브랜드', 'line')}</div>
+    <div class="steps3">
+    <section class="card"><span class="stepno">1</span><h2>본사 수취계좌</h2>
+      <form data-form="account" class="stack"><input type="hidden" name="bid" value="${bid}"><div class="grid2">${Field('ac-bank', 'bank', '은행', 'required placeholder="예: 국민"', acc ? acc.bank : '')}${Field('ac-no', 'account_no', '계좌번호', 'required inputmode="numeric"', acc ? acc.account_no : '')}${Field('ac-holder', 'holder', '예금주', 'required', acc ? acc.holder : '')}</div>
+      <div class="row between"><span class="t13 sub">${acc ? `${fmtDateOnly(acc.updated_at)} 저장 · 브랜드 관리자도 볼 수 있습니다` : '아직 등록하지 않았습니다'}</span><button class="btn secondary sm" type="submit">${acc ? '계좌 수정' : '계좌 저장'}</button></div></form></section>
+    <section class="card"><span class="stepno">2</span><h2>지급할 달 고르기</h2>
+      <div class="tablewrap"><table class="tbl"><thead><tr><th>월</th><th class="r">페이백</th><th class="r">부가세</th><th class="r">합계</th><th>상태</th></tr></thead><tbody>
+      ${rows.map(({ m, r, p }) => { const tot = r.payback + r.payback_vat;
+        return `<tr class="${pick && pick.m === m ? 'sel' : ''}"><td class="nw">${monthLabel(m)}${r.adjustments ? `<div class="t12 sub">반품 조정 ${fmtExact(r.adjustments)}</div>` : ''}</td><td class="r">${fmtExact(r.payback)}</td><td class="r">${fmtExact(r.payback_vat)}</td><td class="r b">${fmtExact(tot)}</td>
+        <td class="nw">${p ? `${Chip('이체 완료', 'st-ship')}<div class="t12 sub">${fmtDateOnly(p.transferred_at)}</div>` : !r.closed ? (tot ? `<button class="textbtn" data-act="nav" data-p="payback">마감 전 · 마감하러 가기</button>` : '<span class="t13 sub">대상 없음</span>') : tot > 0 ? `<button class="btn ${pick && pick.m === m ? '' : 'secondary'} sm" data-act="paymonth" data-v="${m}">${pick && pick.m === m ? '선택됨' : '이 달 선택'}</button>` : '<span class="t13 sub">지급할 금액 없음</span>'}</td></tr>`; }).join('')}
+      </tbody></table></div>
+      ${adj.length ? `<p class="note warn">지급 후 반품 조정: ${adj.map((x) => `${monthLabel(x.m)} ${fmtExact(x.r.adjustments)}`).join(', ')} — 해당 달 페이백에 이미 반영되어 있습니다.</p>` : ''}</section>
+    <section class="card"><span class="stepno">3</span><h2>이체 기록</h2>
+      ${!acc ? '<p class="t13 sub">먼저 1번에서 수취계좌를 저장해 주세요.</p>' : !pick ? '<p class="t13 sub">2번에서 지급할 달을 골라 주세요.</p>'
+        : `<div class="payline"><span class="sub">${esc(b.name)} · ${monthLabel(pick.m)}</span><b class="num">${fmtExact(pick.r.payback + pick.r.payback_vat)}</b><span class="t13 sub">→ ${esc(acc.bank)} ${esc(acc.account_no)} (${esc(acc.holder)})</span></div>
+        <form data-form="payout" class="stack"><input type="hidden" name="bid" value="${bid}"><input type="hidden" name="month" value="${pick.m}">
+          <div class="grid2">${Field('po-at', 'at', '이체한 시각 (한국 시간)', 'type="datetime-local" required', nowLocal)}${Field('po-ref', 'ref', '은행 거래번호 (선택)', 'autocomplete="off"')}</div>
+          ${Field('po-memo', 'memo', '메모 (선택)')}<p class="hint">은행 앱에서 이체를 마친 뒤 기록하세요. 기록은 고칠 수 없고, 이후 반품은 다음 달 정산에서 조정됩니다.</p>
+          <button class="btn lg block" type="submit">이체 완료 기록</button></form>`}</section></div>
+    ${paid.length ? `<h2 class="section-title">이체 기록</h2>${PayoutTable(paid, true)}` : ''}`;
+}
+const PayoutTable = (list, withBrand) => `<div class="tablewrap"><table class="tbl"><thead><tr>${withBrand ? '<th>브랜드</th>' : ''}<th>정산 월</th><th class="r">금액 (부가세 포함)</th><th>받은 계좌</th><th>이체 시각</th><th>거래번호 · 메모</th></tr></thead><tbody>
+  ${list.map((p) => `<tr>${withBrand ? `<td class="nw b">${esc(p.brand_name)}</td>` : ''}<td class="nw">${monthLabel(p.month)}</td><td class="r b">${fmtExact(p.total)}</td><td class="t13">${esc(p.account.bank)} ${esc(p.account.account_no)}<div class="t12 sub">${esc(p.account.holder)}</div></td>
+    <td class="nw num t13">${fmtDate(p.transferred_at)}</td><td class="t13">${esc(p.transfer_ref || '-')}${p.memo ? `<div class="t12 sub">${esc(p.memo)}</div>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+
 function staffNotices(a) {
   const ns = a.listNotices(); const brands = a.listBrands(); const stores = a.listStores();
   const bn = (id) => (db.brands.find((b) => b.id === id) || {}).name;
@@ -2329,7 +3024,7 @@ function staffSettings(a) {
   const s = a.getSettings(); const f = s.footer || FOOTER_DEFAULT;
   return PageHead('운영 설정', '매출 집계 기준은 여기 한 곳에서만 바꿉니다. 바꾸면 열려 있는 달만 다시 계산되고, 마감된 달은 그대로입니다.') +
     `<form data-form="settings" class="stack s6"><section class="card"><h2>매출 집계</h2>
-      <div class="grid2">${FieldSelect('st-basis', 'basis', Object.entries(BASIS_LABEL), s.revenue.basis, '집계 시점 · 미정, 추천값 적용 중')}${Field('st-ship', 'shipping_fee', '배송비 (주문당, 원) · 미정', 'inputmode="numeric"', s.shipping_fee)}</div>
+      <div class="grid2">${FieldSelect('st-basis', 'basis', Object.entries(BASIS_LABEL), s.revenue.basis, '집계 시점 · 미정, 추천값 적용 중')}${Field('st-ship', 'shipping_fee', '배송비 (주문당, 원) · 미정', 'inputmode="numeric"', s.shipping_fee)}${Field('st-free', 'free_shipping_over', '무료배송 기준 (원, 0이면 없음)', 'inputmode="numeric"', s.free_shipping_over || 0)}</div>
       <label class="check"><input type="checkbox" name="include_shipping" ${s.revenue.include_shipping ? 'checked' : ''}> 배송비를 정산 대상 매출에 포함</label>
       <label class="check"><input type="checkbox" name="include_discount" ${s.revenue.include_discount ? 'checked' : ''}> 할인 금액을 빼고 정산</label>
       <label class="check"><input type="checkbox" name="price_includes_vat" ${s.revenue.price_includes_vat ? 'checked' : ''}> 계약 단가에 부가세가 포함되어 있음 (확인 필요)</label>
@@ -2355,11 +3050,14 @@ function staffDesign() {
   const rel = [['brands', '브랜드', 'invite_codes · stores · brand_prices · payback_rules · monthly_closings'], ['users', '계정 (developer / operator / admin / owner)', 'admin은 brand_id 하나에 묶임'],
     ['memberships', '가입 신청 (pending / approved / rejected)', 'users × brands, 승인 시 stores 연결'], ['invite_codes', '초대코드 (24시간 만료)', 'brands'], ['stores', '가맹점', 'brands'],
     ['categories · products · product_options', '품목 · 상품(이미지 포함) · 옵션(여러 개)', 'products는 브랜드 공통'], ['brand_prices', '브랜드별 계약 단가 (effective_from)', 'brands × products'],
-    ['orders · order_items', '주문 · 주문 품목 (박스 수, 단가·입수량·옵션·페이백 스냅샷)', 'stores, brands'], ['shipments · refunds', '송장 · 취소/환불 (마감월이면 조정 월 기록)', 'orders'],
+    ['orders · order_items', '주문 · 주문 품목 (박스 수, 단가·입수량·옵션·페이백 스냅샷)', 'stores, brands'], ['shipments · refunds', '송장 · 취소/환불 (마감월이면 조정 월 기록)', 'orders'], ['order_events', '처리 이력 (접수·결제 확인·배송 준비·송장·배송 완료)', 'orders'], ['tax_invoices', '세금계산서 신청·보완·발행 기록 (승인번호)', 'orders, stores'],
+    ['brand_accounts · payback_payouts', '브랜드 수취계좌 · 페이백 이체 기록 (마감월 스냅샷, 수정 불가)', 'brands × 월'],
     ['notices', '공지 (전체 / 브랜드 / 매장)', 'brands, stores'], ['payback_rules', '정산 기준 (방식 A 비율 / B 품목별 박스당, 시작 월)', 'brands'], ['monthly_closings', '월 마감 스냅샷', 'brands × 월'], ['audit_logs', '누가·언제·무엇', 'users']];
   return PageHead('설계 문서', '권한표, 데이터 구조, 아직 정하지 않은 항목입니다.') +
     `<section class="card"><h2>역할 × 기능 권한</h2>${t([
       ['브랜드 추가·이름 변경', '●', '●', '–', '–'], ['상품·옵션·이미지·가격', '●', '●', '–', '–'], ['가입 승인·반려', '●', '●', '–', '–'], ['송장·입금 확인·취소', '●', '●', '–', '–'],
+      ['송장 일괄 입력·주문 단계 일괄 변경·CSV', '●', '●', '–', '–'], ['세금계산서 보완 요청·발행 기록', '●', '●', '–', '–'], ['세금계산서 신청 (계좌이체 주문)', '–', '–', '–', '● 자기 매장'],
+      ['페이백 수취계좌·이체 기록', '●', '●', '● 자기 브랜드 보기만', '–'], ['주문서(배송지)·입금 전 주문 취소·다시 담기', '–', '–', '–', '● 자기 매장'],
       ['공지 작성', '●', '●', '–', '–'], ['페이백 기준·월 마감', '●', '●', '–', '–'], ['초대코드 확인·공유', '● 전체', '● 전체', '● 자기 브랜드', '–'],
       ['초대코드 새로 발급', '● 전체', '● 전체', '● 자기 브랜드', '–'], ['매출 그래프 1~4개월', '● 전체·브랜드별', '● 전체·브랜드별', '● 자기 브랜드', '–'],
       ['품목별 박스 수량', '●', '●', '–', '–'], ['상품 조회·주문', '–', '–', '–', '● 자기 브랜드 (승인 후)'], ['주문·배송·공지 조회', '● 전체', '● 전체', '–', '● 자기 매장'],
@@ -2401,7 +3099,9 @@ function render() {
   else { if (!page || !PAGE_LABEL[page] || NAV.owner.includes(page)) page = 'home'; html = renderStaff(page); }
   if (state.modal) {
     const m = state.modal;
-    const inner = m.type === 'product' ? productSheet(m.pid) : m.type === 'editp' ? productEditSheet(m.pid) : m.type === 'rule' ? ruleSheet(m.bid) : m.type === 'confirm' ? confirmSheet() : m.type === 'legal' ? legalSheet(m.which) : m.type === 'salesopts' ? salesOptsSheet() : '';
+    const SHEETS = { product: () => productSheet(m.pid), editp: () => productEditSheet(m.pid), rule: () => ruleSheet(m.bid), confirm: confirmSheet, legal: () => legalSheet(m.which), salesopts: salesOptsSheet,
+      reorder: () => reorderSheet(m.oid), taxreq: () => taxReqSheet(m.oid), taxissue: () => taxIssueSheet(m.oid), bulkship: bulkShipSheet, orderview: () => orderViewSheet(m.oid) };
+    const inner = SHEETS[m.type] ? SHEETS[m.type]() : '';
     html += `<div class="scrim ${state.modalShown === m ? '' : 'enter'}" data-act="scrim">${inner}</div>`;
     state.modalShown = m;   // 같은 창을 다시 그릴 때는 열림 효과를 반복하지 않는다
   } else state.modalShown = null;
@@ -2492,7 +3192,52 @@ const actions = {
   paid: (t) => act(() => api().confirmPayment(t.dataset.o), '입금을 확인했습니다.'),
   deliver: (t) => { act(() => api().deliver(t.dataset.o), '배송 완료로 바꿨습니다.'); bigPill('배송 완료'); },
   moreorders: () => { state.orderLimit += 50; render(); },
-  resetorders: () => { state.orderFilter = { brand: '', status: '' }; render(); },
+  resetorders: () => { state.of = { brand: '', quick: '', q: '', period: '' }; state.orderLimit = 50; render(); },
+  ofquick: (t) => { state.of.quick = t.dataset.v; state.orderLimit = 50; render(); },
+  selclear: () => { state.sel = {}; render(); },
+  bulkst: (t) => { const ids = Object.keys(state.sel); let r; act(() => { r = api().bulkStatus(ids, t.dataset.v); }, null,
+    () => { state.sel = {}; toast(`${r.changed}건을 '${STATUS[t.dataset.v][0]}'(으)로 바꿨습니다.${r.skipped ? ` ${r.skipped}건은 단계가 맞지 않아 건너뛰었습니다.` : ''}`); }); },
+  prep1: (t) => act(() => api().bulkStatus([t.dataset.o], 'preparing'), '배송 준비로 바꿨습니다.'),
+  bulkship: () => { state.modal = { type: 'bulkship' }; render(); },
+  bulkback: () => { state.modal.rows = null; render(); },
+  bulksave: () => { const ok = reviewTracking(state.modal.rows).filter((r) => !r.err).map((r) => ({ no: r.no, carrier: r.carrier, tracking_no: r.tracking_no })); let res = [];
+    act(() => { res = api().bulkShip(ok); }, null, () => { state.modal = null; state.sel = {}; const n = res.filter((x) => x.ok).length; toast(`송장 ${n}건을 저장했습니다.${res.length - n ? ` ${res.length - n}건은 저장하지 못했습니다.` : ''} 점주 화면에 바로 보입니다.`); }); },
+  staffopen: (t) => { state.modal = { type: 'orderview', oid: t.dataset.o }; render(); },
+  csvorders: () => ordersCsv(api()),
+  csvboxes: () => { const rows = api().boxesReport(state.boxesMonth, state.virtual); const prods = db.products.filter((p) => rows.some((r) => r.boxes[p.id]));
+    downloadCsv(`품목별박스_${state.boxesMonth}.csv`, ['품목', '입수량', ...rows.map((r) => r.brand_name), '합계'], prods.map((p) => [p.name, p.pack_qty || '', ...rows.map((r) => r.boxes[p.id] || 0), rows.reduce((s, r) => s + (r.boxes[p.id] || 0), 0)])); },
+  csvsettle: () => { const rows = api().settlement(state.settleMonth, state.virtual);
+    downloadCsv(`페이백정산_${state.settleMonth}.csv`, ['브랜드', '방식', '정산 대상 매출', '마감월 조정', '페이백', '부가세', '합계', '마감'], rows.map((r) => [r.brand_name, r.rule ? (r.rule.method === 'A' ? `A ${r.rule.rate}%` : 'B 박스당') : '미설정', r.amount, r.adjustments || 0, r.payback, r.payback_vat, r.payback + r.payback_vat, r.closed ? '마감' : ''])); },
+  taxfilter: (t) => { state.taxFilter = t.dataset.v; render(); },
+  taxissue: (t) => { state.modal = { type: 'taxissue', oid: t.dataset.o }; render(); },
+  paymonth: (t) => { state.payMonth = t.dataset.v; render(); },
+  cardqty: (t) => { const k = t.dataset.k; state.cardQty[k] = Math.max(1, (state.cardQty[k] || 1) + Number(t.dataset.d)); render(); },
+  cardadd: (t) => {
+    const p = api().listProducts().find((x) => x.id === t.dataset.p); if (!p) return;
+    const opt = p.options.length ? (state.cardOpt[p.id] && p.options.some((o) => o.id === state.cardOpt[p.id]) ? state.cardOpt[p.id] : p.options[0].id) : null;
+    const qty = state.cardQty[p.id] || 1; const key = p.id + '|' + (opt || '');
+    state.cart[key] = { product_id: p.id, option_id: opt, qty: (state.cart[key] ? state.cart[key].qty : 0) + qty };
+    state.cardQty[p.id] = 1; render(); toast(`${p.name}${opt ? ` (${(p.options.find((o) => o.id === opt) || {}).name})` : ''} · ${qty}박스를 담았습니다.`);
+  },
+  openorder: (t) => go('order', t.dataset.o),
+  myfilter: (t) => { state.myFilter = t.dataset.v; render(); },
+  copyno: (t) => { const o = guard(() => api().getOrder(t.dataset.o)); if (!o || o.__error) return; copyOr(o.no, 'ono-' + o.id, '주문번호를 복사했습니다.'); },
+  copybank: (t) => { const acc = api().publicInfo().bank_account; copyOr(acc, 'bank-' + t.dataset.o, '계좌번호를 복사했습니다.'); },
+  reorder: (t) => { state.modal = { type: 'reorder', oid: t.dataset.o }; render(); },
+  reordermode: (t) => { state.modal.mode = t.dataset.v; render(); },
+  doreorder: (t) => {
+    const a = api(); const o = a.getOrder(t.dataset.o); const prods = a.listProducts(); let n = 0, boxes = 0;
+    if (state.modal.mode === 'replace') state.cart = {};
+    for (const i of o.items) { const p = prods.find((x) => x.id === i.product_id); if (!p || (p.options.length && !p.options.some((x) => x.id === i.option_id))) continue;
+      const opt = p.options.length ? i.option_id : null; const key = p.id + '|' + (opt || '');
+      state.cart[key] = { product_id: p.id, option_id: opt, qty: (state.cart[key] ? state.cart[key].qty : 0) + i.qty_boxes }; n++; boxes += i.qty_boxes; }
+    state.modal = null; go('cart'); toast(`${n}개 품목 · ${boxes}박스를 현재 가격으로 담았습니다.`);
+  },
+  askmycancel: (t) => { const o = db.orders.find((x) => x.id === t.dataset.o); state.confirm = { title: `${o.no} 주문을 취소할까요?`, text: '입금 전 주문이라 바로 취소됩니다. 담았던 상품은 다시 담기로 언제든 주문할 수 있어요.', ok: '주문 취소', run: () => api().cancelMyOrder(o.id) }; state.modal = { type: 'confirm' }; render(); },
+  askclearcart: () => { state.confirm = { title: '장바구니를 비울까요?', text: `담아둔 ${cartCount()}박스가 삭제됩니다. 이미 접수한 주문은 바뀌지 않습니다.`, ok: '비우기', run: () => { state.cart = {}; } }; state.modal = { type: 'confirm' }; render(); },
+  lastship: () => { const d = lastShipTo(api()); if (!d) return toast('이전 주문 배송지가 없습니다.'); keepPayDraft(); state.shipDraft = d; render(); toast('최근 배송지를 불러왔습니다.'); },
+  storeship: () => { keepPayDraft(); state.shipDraft = storeShipTo(api().me()); render(); },
+  taxreq: (t) => { state.modal = { type: 'taxreq', oid: t.dataset.o }; render(); },
   askcancel: (t) => { const o = db.orders.find((x) => x.id === t.dataset.o); state.confirm = { title: `${o.no} 취소·환불`, text: '결제된 주문이면 원래 주문한 달 매출에서 차감합니다. 그 달이 이미 마감됐다면 마감 숫자는 그대로 두고 이번 달에 조정 항목으로 넣습니다.', ok: '취소·환불하기', run: () => api().cancelOrder(o.id, '운영자 처리') }; state.modal = { type: 'confirm' }; render(); },
   askclose: (t) => { const b = db.brands.find((x) => x.id === t.dataset.b); state.confirm = { title: `${b.name} ${monthLabel(state.settleMonth)} 마감`, text: '마감하면 이 달의 매출·박스·페이백이 고정됩니다. 이후 가격·기준을 바꾸거나 반품이 들어와도 이 숫자는 바뀌지 않습니다.', ok: '마감하기', run: () => api().closeMonth(b.id, state.settleMonth, state.virtual) }; state.modal = { type: 'confirm' }; render(); },
   askreset: () => { state.confirm = { title: '처음 상태로 되돌리기', text: '이 브라우저에 저장된 주문·가입·설정이 모두 지워지고 7월 시트와 가상 데이터만 남습니다.', ok: '되돌리기', run: () => { db = normalize(seed()); state.qa = null; } }; state.modal = { type: 'confirm' }; render(); },
@@ -2511,6 +3256,15 @@ const actions = {
   clearq: () => { state.shopQ = ''; render(); },
   resetshop: () => { state.shopQ = ''; state.shopCat = 'all'; render(); },
 };
+function keepShipDraft() { const f = document.querySelector('form[data-form="checkout"]'); if (!f) return; state.shipDraft = Object.fromEntries(['name', 'phone', 'zip', 'addr1', 'addr2', 'memo'].map((k) => [k, f.elements[k].value])); }
+function keepPayDraft() { const f = document.querySelector('form[data-form="checkout"]'); if (!f) return; const c = f.querySelector('input[name="pay"]:checked'); if (c) state.payDraft = c.value; }
+function copyOr(text, nodeId, okMsg) {
+  if (!text) return;
+  const p = copyText(text, () => { const el = document.getElementById(nodeId); if (el) selectNode(el); toast('선택되었습니다. 길게 눌러 복사해 주세요.'); });
+  if (p) p.then((ok) => { if (ok) toast(okMsg); });
+}
+/** datetime-local(한국 시간으로 입력) → ISO */
+const kstLocalToISO = (v) => (v ? new Date(`${v}${v.length === 16 ? ':00' : ''}+09:00`).toISOString() : '');
 function keepOpt() { const sel = document.querySelector('.sheet input[name="opt"]:checked'); if (sel) state.modal.opt = sel.value; }
 function keepProductForm() {   // 이미지를 바꿀 때 입력 중이던 값이 사라지지 않게
   const f = document.querySelector('form[data-form="product"]'); if (!f) return;
@@ -2533,8 +3287,14 @@ const changes = {
   sort: (el) => { state.shopSort = el.value; render(); },
   boxesMonth: (el) => { if (el.value) { state.boxesMonth = el.value; render(); } },
   settleMonth: (el) => { if (el.value) { state.settleMonth = el.value; render(); } },
-  ofbrand: (el) => { state.orderFilter.brand = el.value; state.orderLimit = 50; render(); },
-  ofstatus: (el) => { state.orderFilter.status = el.value; state.orderLimit = 50; render(); },
+  ofbrand: (el) => { state.of.brand = el.value; state.orderLimit = 50; render(); },
+  ofperiod: (el) => { state.of.period = el.value; state.orderLimit = 50; render(); },
+  selorder: (el) => { if (el.checked) state.sel[el.dataset.o] = true; else delete state.sel[el.dataset.o]; render(); },
+  selall: (el) => { const shown = staffOrderList(api()).list.slice(0, state.orderLimit); for (const o of shown) { if (el.checked) state.sel[o.id] = true; else delete state.sel[o.id]; } render(); },
+  cardopt: (el) => { state.cardOpt[el.dataset.k] = el.value; },
+  cardset: (el) => { state.cardQty[el.dataset.k] = Math.max(1, Math.floor(Number(el.value)) || 1); render(); },
+  paydraft: (el) => { keepShipDraft(); state.payDraft = el.value; render(); },
+  paybrand: (el) => { state.payBrand = el.value; state.payMonth = ''; render(); },
   pricebrand: (el) => { state.priceBrand = el.value; render(); },
   cartset: (el) => { const l = state.cart[el.dataset.k]; l.qty = Math.max(1, Math.floor(Number(el.value)) || 1); render(); },
   sheetqtyset: (el) => { keepOpt(); state.modal.qty = Math.max(1, Math.floor(Number(el.value)) || 1); render(); },
@@ -2563,11 +3323,29 @@ const forms = {
     state.cart[key] = { product_id: f.pid, option_id: opt ? opt.value : null, qty: (state.cart[key] ? state.cart[key].qty : 0) + qty };
     state.modal = null; render(); toast(`${p.name} ${qty}박스를 담았습니다.`);
   },
-  order: (f, form) => {
-    const pay = form.querySelector('input[name="pay"]:checked').value;
-    act(() => { api().placeOrder(Object.values(state.cart).map((l) => ({ product_id: l.product_id, option_id: l.option_id, qty_boxes: l.qty })), pay); },
-      pay === 'card' ? null : '주문을 접수했습니다. 입금 확인 후 출고됩니다.',
-      () => { state.cart = {}; state.page = 'myorders'; window.scrollTo(0, 0); bigPill('주문 완료'); });
+  checkout: (f, form) => {
+    const ship = { name: f.name, phone: f.phone, zip: f.zip, addr1: f.addr1, addr2: f.addr2, memo: f.memo }; state.shipDraft = ship; state.payDraft = f.pay;
+    const miss = !ship.name.trim() ? 'co-name' : !ship.phone.trim() ? 'co-phone' : !ship.addr1.trim() ? 'co-addr1' : '';
+    if (miss) { const el = document.getElementById(miss); if (el) el.focus(); return toast(miss === 'co-name' ? '받는 분을 입력해 주세요.' : miss === 'co-phone' ? '연락처를 입력해 주세요.' : '배송 주소를 입력해 주세요.'); }
+    if (!f.agree) return toast('주문 내용과 이용약관 확인에 체크해 주세요.');
+    let o = null;
+    act(() => { o = api().placeOrder(Object.values(state.cart).map((l) => ({ product_id: l.product_id, option_id: l.option_id, qty_boxes: l.qty })), f.pay, ship, state.clientKey); }, null,
+      () => { state.cart = {}; state.clientKey = null; state.shipDraft = null; state.payDraft = null; state.page = 'myorders'; window.scrollTo(0, 0);
+        if (o && o.duplicate) toast('이미 접수된 주문을 찾았습니다. 중복으로 접수하지 않았습니다.');
+        else { bigPill('주문 완료'); if (f.pay === 'bank') toast('주문을 접수했습니다. 입금이 확인되면 출고됩니다.'); } });
+  },
+  ofsearch: (f) => { state.of.q = f.q || ''; state.orderLimit = 50; render(); },
+  bulkparse: (f) => { const rows = parseTracking(f.text, f.carrier); if (!rows.length) return toast('붙여넣은 줄이 없습니다. 주문번호와 송장번호를 넣어 주세요.'); Object.assign(state.modal, { rows, text: f.text, carrier: f.carrier }); render(); },
+  taxreq: (f) => act(() => api().requestTaxInvoice(f.oid, f), '세금계산서를 신청했습니다. 운영자가 발행하면 승인번호가 보입니다.', () => { state.modal = null; }),
+  taxreturn: (f) => act(() => api().returnTaxInvoice(f.oid, f.note), '보완 요청을 보냈습니다. 점주 화면에 사유가 보입니다.'),
+  taxissue: (f) => act(() => api().issueTaxInvoice(f.oid, f), '발행 완료로 기록했습니다.', () => { state.modal = null; }),
+  account: (f) => act(() => api().setBrandAccount(f.bid, f), '수취계좌를 저장했습니다.'),
+  payout: (f) => {
+    const b = db.brands.find((x) => x.id === f.bid); const r = api().settlement(f.month, false).find((x) => x.brand_id === f.bid);
+    const at = kstLocalToISO(f.at); if (!at) return toast('이체한 시각을 넣어 주세요.');
+    state.confirm = { title: `${b.name} ${monthLabel(f.month)} 이체 완료로 기록할까요?`, text: `${fmtExact(r.payback + r.payback_vat)}을 은행에서 이체했는지 확인해 주세요. 기록은 고칠 수 없습니다.`, ok: '확인하고 기록',
+      run: () => { api().recordPayout(f.bid, f.month, { ref: f.ref, at, memo: f.memo }); state.payMonth = ''; } };
+    state.modal = { type: 'confirm' }; render();
   },
   decide: (f, form, sub) => act(() => api().decideMembership(f.mid, sub && sub.value === 'approve', { store_id: f.store, reason: f.reason }), sub && sub.value === 'approve' ? '승인했습니다. 점주가 이제 주문할 수 있습니다.' : '반려했습니다.'),
   addbrand: (f) => act(() => api().addBrand(f.name, f.admin), '브랜드를 추가하고 초대코드를 발급했습니다.'),
@@ -2587,7 +3365,7 @@ const forms = {
     act(() => { api().setPaybackRule(f.bid, { method: f.method, rate: f.rate, per_box, effective_from: f.from }); }, '정산 기준을 저장했습니다.', () => { state.modal = null; });
   },
   settings: (f) => act(() => api().saveSettings({ revenue: { basis: f.basis, include_shipping: !!f.include_shipping, include_discount: !!f.include_discount, price_includes_vat: !!f.price_includes_vat },
-    payback_vat: !!f.payback_vat, shipping_fee: Math.max(0, Math.round(Number(f.shipping_fee) || 0)), site_url: f.site_url.trim(), bank_account: f.bank_account.trim(),
+    payback_vat: !!f.payback_vat, shipping_fee: Math.max(0, Math.round(Number(f.shipping_fee) || 0)), free_shipping_over: Math.max(0, Math.round(Number(f.free_shipping_over) || 0)), site_url: f.site_url.trim(), bank_account: f.bank_account.trim(),
     carriers: f.carriers.split(',').map((s) => s.trim()).filter(Boolean),
     footer: { company: f.f_company.trim(), ceo: f.f_ceo.trim(), biz_no: f.f_biz_no.trim(), address: f.f_address.trim(), contact: f.f_contact.trim(), terms: f.f_terms, privacy: f.f_privacy } }), '설정을 저장했습니다.'),
   assignadmin: (f) => act(() => api().addAdmin(f.bid, f.email.trim()), `${f.email.trim()} 계정을 관리자로 지정했습니다.`),
