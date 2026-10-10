@@ -1,0 +1,3042 @@
+/* =====================================================================
+   모아상점 엔진 — 데이터 모델 · 권한(API 계층) · 매출 순수 함수
+   화면은 반드시 이 API만 거쳐 데이터에 접근한다. (실서비스: Supabase RLS)
+   ===================================================================== */
+
+/* ---------- 시간: 모든 월·일 경계는 한국 시간(KST) ---------- */
+const KST_MS = 9 * 3600 * 1000;
+function kstParts(iso) {
+  const d = new Date(new Date(iso).getTime() + KST_MS);
+  return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate(), hh: d.getUTCHours(), mi: d.getUTCMinutes() };
+}
+const pad2 = (n) => String(n).padStart(2, '0');
+function kstMonth(iso) { const p = kstParts(iso); return `${p.y}-${pad2(p.m)}`; }
+function kstDay(iso) { const p = kstParts(iso); return `${p.y}-${pad2(p.m)}-${pad2(p.d)}`; }
+function kstISO(day, time = '12:00') { return new Date(`${day}T${time}:00+09:00`).toISOString(); }
+function addMonths(ym, k) {
+  let [y, m] = ym.split('-').map(Number); m += k;
+  while (m < 1) { m += 12; y--; } while (m > 12) { m -= 12; y++; }
+  return `${y}-${pad2(m)}`;
+}
+function daysInMonth(ym) { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
+/** 기준 월에서 거꾸로 N개월 (N=1~4). 9월·3 → [7월, 8월, 9월] */
+function periodMonths(base, n) {
+  n = Math.max(1, Math.min(4, Number(n) || 1));
+  const out = []; for (let i = n - 1; i >= 0; i--) out.push(addMonths(base, -i)); return out;
+}
+function periodRange(base, n) {
+  const months = periodMonths(base, n);
+  return { months, start: `${months[0]}-01`, end: `${base}-${pad2(daysInMonth(base))}` };
+}
+
+/* ---------- 금액·수량 표기 ---------- */
+function fmtWon(n) {
+  n = Math.round(Number(n) || 0);
+  if (n === 0) return '0원';
+  const neg = n < 0, a = Math.abs(n);
+  const eok = Math.floor(a / 1e8), man = Math.floor((a % 1e8) / 1e4), won = a % 1e4;
+  const parts = [];
+  if (eok) parts.push(eok.toLocaleString('ko-KR') + '억');
+  if (man) parts.push(man.toLocaleString('ko-KR') + '만');
+  if (won) parts.push(won.toLocaleString('ko-KR'));
+  return (neg ? '-' : '') + parts.join(' ') + (won ? '원' : ' 원');
+}
+function fmtExact(n) { return Math.round(Number(n) || 0).toLocaleString('ko-KR') + '원'; }
+function fmtBoxes(boxes, pack) {
+  const b = Number(boxes) || 0;
+  return `${b.toLocaleString('ko-KR')}박스 (${pack ? (b * pack).toLocaleString('ko-KR') + '개' : '입수량 미등록'})`;
+}
+/** 정산 단위에서 한 번만 하는 반올림 (원 미만 사사오입, 음수 대칭) */
+function roundWon(x) { return Math.sign(x) * Math.floor(Math.abs(x) + 0.5); }
+/** 비율(%)을 1만분율 정수로 — 부동소수 오차 방지. 2.5% → 250 */
+function rateToBp(rate) { return Math.round(Number(rate) * 100); }
+
+/* ---------- 페이백 계산 순수 함수 (검수 11·12) ---------- */
+function paybackA(amount, ratePercent) { return roundWon((amount * rateToBp(ratePercent)) / 10000); }
+function paybackB(lines) { return lines.reduce((s, l) => s + l.boxes * l.perBox, 0); }
+
+/* ---------- 오류 ---------- */
+class ApiError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
+const deny = (why) => { throw new ApiError('FORBIDDEN', why || '이 계정에는 권한이 없습니다.'); };
+const bad = (why) => { throw new ApiError('INVALID', why); };
+
+/* ---------- 매출 집계 설정: 한 곳에서만 바꾼다 ---------- */
+const EVENT_FIELD = { ordered: 'created_at', paid: 'paid_at', shipped: 'shipped_at', delivered: 'delivered_at' };
+const BASIS_LABEL = { ordered: '주문', paid: '결제 완료', shipped: '출고', delivered: '배송 완료' };
+
+/* ---------- 성능: 변경 번호(db.rev)가 같으면 인덱스·원장을 다시 만들지 않는다 ---------- */
+const _memo = new WeakMap();
+function memo(db, key, fn) {
+  let m = _memo.get(db);
+  if (!m || m.rev !== (db.rev || 0)) { m = { rev: db.rev || 0, map: new Map() }; _memo.set(db, m); }
+  if (!m.map.has(key)) m.map.set(key, fn());
+  return m.map.get(key);
+}
+function groupBy(arr, key) { const g = new Map(); for (const x of arr) { const k = x[key]; let a = g.get(k); if (!a) g.set(k, (a = [])); a.push(x); } return g; }
+function dbIndex(db) {
+  return memo(db, 'idx', () => ({
+    items: groupBy(db.order_items, 'order_id'), refunds: groupBy(db.refunds, 'order_id'),
+    shipments: new Map(db.shipments.map((s) => [s.order_id, s])), stores: new Map(db.stores.map((s) => [s.id, s])),
+    brands: new Map(db.brands.map((b) => [b.id, b])), orders: new Map(db.orders.map((o) => [o.id, o])),
+    events: groupBy(db.order_events || [], 'order_id'), tax: new Map((db.tax_invoices || []).map((t) => [t.order_id, t])),
+  }));
+}
+const itemsOf = (db, oid) => dbIndex(db).items.get(oid) || [];
+const refundsOf = (db, oid) => dbIndex(db).refunds.get(oid) || [];
+
+/* ---------- 원장: 주문·환불을 집계 시점 기준 날짜로 펼친다 ---------- */
+function orderEntry(db, o, sign, day, kind) {
+  const cfg = db.settings.revenue;
+  const items = itemsOf(db, o.id);
+  let goods = 0; const boxes = {}; let pbB = 0, pbMissing = 0;
+  for (const it of items) {
+    goods += it.unit_price * it.qty_boxes;
+    boxes[it.product_id] = (boxes[it.product_id] || 0) + it.qty_boxes;
+    if (o.payback && o.payback.method === 'B') {
+      if (it.payback_per_box == null) pbMissing += it.qty_boxes; else pbB += it.payback_per_box * it.qty_boxes;
+    }
+  }
+  let amount = goods + (cfg.include_shipping ? (o.shipping_fee || 0) : 0) - (cfg.include_discount ? (o.discount || 0) : 0);
+  const pbANum = o.payback && o.payback.method === 'A' ? amount * rateToBp(o.payback.rate) : 0;
+  return { day, month: day.slice(0, 7), kind, order_id: o.id,
+    amount: sign * amount, boxes: scale(boxes, sign), pbB: sign * pbB, pbANum: sign * pbANum, pbMissing: sign * pbMissing };
+}
+function refundLineEntry(db, o, r, day) {
+  const items = itemsOf(db, o.id);
+  let amount = 0, pbB = 0, pbMissing = 0; const boxes = {};
+  for (const ln of r.lines) {
+    const it = items.find((i) => i.id === ln.item_id); if (!it) continue;
+    amount += it.unit_price * ln.qty;
+    boxes[it.product_id] = (boxes[it.product_id] || 0) + ln.qty;
+    if (o.payback && o.payback.method === 'B') { if (it.payback_per_box == null) pbMissing += ln.qty; else pbB += it.payback_per_box * ln.qty; }
+  }
+  const pbANum = o.payback && o.payback.method === 'A' ? amount * rateToBp(o.payback.rate) : 0;
+  return { day, month: day.slice(0, 7), kind: 'refund', order_id: o.id,
+    amount: -amount, boxes: scale(boxes, -1), pbB: -pbB, pbANum: -pbANum, pbMissing: -pbMissing };
+}
+function scale(obj, k) { const o = {}; for (const key in obj) o[key] = obj[key] * k; return o; }
+
+function ledger(db, brandId, virtual) {
+  const field = EVENT_FIELD[db.settings.revenue.basis];
+  const out = [];
+  for (const o of db.orders) {
+    if (o.brand_id !== brandId || !!o.is_virtual !== !!virtual) continue;
+    const ev = o[field]; if (!ev) continue;
+    const day = kstDay(ev);
+    out.push(orderEntry(db, o, 1, day, 'order'));
+    for (const r of refundsOf(db, o.id)) {
+      // 원래 주문한 달에서 차감. 그 달이 이미 마감됐으면 환불 발생 월에 조정 항목으로 넣는다.
+      const rday = r.adjust_month ? kstDay(r.created_at) : day;
+      const e = r.full ? orderEntry(db, o, -1, rday, 'refund') : refundLineEntry(db, o, r, rday);
+      e.adjust = !!r.adjust_month; out.push(e);
+    }
+  }
+  return out;
+}
+
+/** 브랜드 원장을 월별로 한 번만 묶어 둔다 */
+function ledgerByMonth(db, brandId, virtual) {
+  return memo(db, `lbm|${brandId}|${!!virtual}|${db.settings.revenue.basis}|${db.settings.revenue.include_shipping}|${db.settings.revenue.include_discount}`, () => {
+    const by = new Map();
+    for (const e of ledger(db, brandId, virtual)) { let a = by.get(e.month); if (!a) by.set(e.month, (a = [])); a.push(e); }
+    return by;
+  });
+}
+
+function findClosing(db, brandId, month, virtual) {
+  return db.monthly_closings.find((c) => c.brand_id === brandId && c.month === month && !!c.is_virtual === !!virtual);
+}
+
+/** 매출 계산의 유일한 입구. 마감된 달은 마감 스냅샷을 그대로 돌려준다. */
+function revenue(db, brandId, month, virtual = false) {
+  const closing = findClosing(db, brandId, month, virtual);
+  if (closing) return { ...closing.snapshot, closed: true };
+  // 실서비스: 서버 함수 revenue() 결과가 있으면 그대로 쓴다 (매출 계산은 서버 한 곳)
+  const pre = db.server_revenue && db.server_revenue[`${brandId}|${month}|${!!virtual}`];
+  if (pre) return pre;
+  const dim = daysInMonth(month);
+  const daily = new Array(dim).fill(0);
+  let amount = 0, pbB = 0, pbANum = 0, pbMissing = 0, adjustments = 0; const boxes = {};
+  for (const e of ledgerByMonth(db, brandId, virtual).get(month) || []) {
+    amount += e.amount; pbB += e.pbB; pbANum += e.pbANum; pbMissing += e.pbMissing;
+    daily[Number(e.day.slice(8, 10)) - 1] += e.amount;
+    for (const k in e.boxes) boxes[k] = (boxes[k] || 0) + e.boxes[k];
+    if (e.adjust) adjustments += e.amount;
+  }
+  const payback = pbB + roundWon(pbANum / 10000);         // 반올림은 정산 단위에서 1회
+  const payback_vat = db.settings.payback_vat ? roundWon(payback * 0.1) : 0;
+  return { brand_id: brandId, month, amount, daily, boxes, payback, payback_vat, payback_missing_boxes: pbMissing, adjustments, closed: false };
+}
+
+/** 여러 브랜드 × N개월 리포트. 총매출은 각 월을 한 번씩만 더한다. */
+function salesReport(db, brandIds, base, n, virtual = false) {
+  const range = periodRange(base, n);
+  const months = range.months.map((m) => {
+    let amount = 0; const daily = new Array(daysInMonth(m)).fill(0); let closedAll = true;
+    for (const b of brandIds) {
+      const r = revenue(db, b, m, virtual);
+      amount += r.amount; r.daily.forEach((v, i) => (daily[i] += v)); if (!r.closed) closedAll = false;
+    }
+    return { month: m, amount, daily, closed: closedAll && brandIds.length > 0 };
+  });
+  const prevMonth = addMonths(range.months[0], -1);
+  let prevFirst = 0; for (const b of brandIds) prevFirst += revenue(db, b, prevMonth, virtual).amount;
+  months.forEach((m, i) => (m.prev = i === 0 ? prevFirst : months[i - 1].amount));
+  const total = months.reduce((s, m) => s + m.amount, 0);
+  const prevRange = periodMonths(addMonths(base, -range.months.length), range.months.length);
+  let prevTotal = 0; for (const m of prevRange) for (const b of brandIds) prevTotal += revenue(db, b, m, virtual).amount;
+  return { ...range, monthsData: months, total, prevTotal };
+}
+
+/* ---------- 시점별 단가·페이백 기준 ---------- */
+function priceAt(db, brandId, productId, iso) {
+  const day = kstDay(iso);
+  const rows = db.brand_prices.filter((p) => p.brand_id === brandId && p.product_id === productId && p.effective_from <= day)
+    .sort((a, b) => (a.effective_from < b.effective_from ? 1 : a.effective_from > b.effective_from ? -1 : (a.created_at < b.created_at ? 1 : -1)));
+  return rows[0] || null;
+}
+function paybackRuleAt(db, brandId, iso) {
+  const m = kstMonth(iso);
+  const rows = db.payback_rules.filter((r) => r.brand_id === brandId && r.effective_from <= m)
+    .sort((a, b) => (a.effective_from < b.effective_from ? 1 : a.effective_from > b.effective_from ? -1 : (a.created_at < b.created_at ? 1 : -1)));
+  return rows[0] || null;
+}
+
+const FOOTER_DEFAULT = { company: '', ceo: '', biz_no: '', address: '', contact: '', terms: '', privacy: '', shipping_info: '', return_info: '' };
+const READ_METHODS = new Set(['me', 'listBrands', 'getInvite', 'listMemberships', 'listStores', 'listCategories', 'listProducts', 'listOrders', 'getOrder',
+  'listNotices', 'salesReport', 'boxesReport', 'listPaybackRules', 'currentPaybackRule', 'settlement', 'auditLogs', 'getSettings', 'getDevSettings', 'publicInfo',
+  'listTaxInvoices', 'getBrandAccount', 'listPayouts', 'shippingFor']);
+/** 주문 단계 (화면 표시 순서) */
+const ORDER_STEPS = ['pending_payment', 'paid', 'preparing', 'shipped', 'delivered'];
+const STATUS_EVENT = { paid: '결제 확인', preparing: '배송 준비 시작', shipped: '배송 시작', delivered: '배송 완료', cancelled: '주문 취소', refunded: '취소·환불' };
+/** 배송비: 무료배송 기준 이상이면 0 */
+function shippingFee(settings, goods) { const over = Number(settings.free_shipping_over) || 0; return over > 0 && goods >= over ? 0 : Number(settings.shipping_fee) || 0; }
+/** 받는 곳 정리·검사 (서버 place_order 와 같은 규칙) */
+function cleanShipTo(t) {
+  const g = (k, max = 200) => String((t || {})[k] ?? '').trim().slice(0, max);
+  const s = { name: g('name'), phone: g('phone'), zip: g('zip'), addr1: g('addr1'), addr2: g('addr2'), memo: g('memo') };
+  if (!s.name) bad('받는 분을 입력해 주세요.'); if (!s.phone) bad('연락처를 입력해 주세요.'); if (!s.addr1) bad('배송 주소를 입력해 주세요.');
+  return s;
+}
+/** 세금계산서 받는 사업자 정리·검사 */
+function cleanBuyer(b) {
+  const g = (k, max = 200) => String((b || {})[k] ?? '').trim().slice(0, max);
+  const biz = g('biz_no', 40).replace(/[^0-9]/g, '');
+  if (biz.length !== 10) bad('사업자등록번호 10자리를 확인해 주세요.');
+  const out = { biz_no: biz, company: g('company'), ceo: g('ceo'), address: g('address'), biz_type: g('biz_type', 100), biz_item: g('biz_item', 100), email: g('email'), memo: g('memo', 500) };
+  if (!out.company || !out.ceo || !out.address) bad('상호·대표자·사업장 주소를 입력해 주세요.');
+  if (out.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(out.email)) bad('받을 이메일 주소를 확인해 주세요.');
+  return out;
+}
+const fmtBizNo = (v) => { const d = String(v || '').replace(/[^0-9]/g, ''); return d.length === 10 ? `${d.slice(0, 3)}-${d.slice(3, 5)}-${d.slice(5)}` : String(v || ''); };
+
+/* ---------- 시드 데이터 ---------- */
+const SHEET_PRODUCTS = [
+  ['p01', 'c_main', '220Ø 소 흑색', 59000, 5000, 'bowl-l-dark'],
+  ['p02', 'c_body', '220Ø 소 흑색 몸통만', 33900, 3500, 'body-dark'],
+  ['p03', 'c_main', '220Ø 중 흑색', 62000, 4000, 'bowl-l-dark'],
+  ['p04', 'c_body', '220Ø 중 흑색 몸통만', 36900, 2500, 'body-dark'],
+  ['p05', 'c_main', '220Ø 대 흑색', 68000, 4000, 'bowl-l-dark'],
+  ['p06', 'c_body', '220Ø 대 흑색 몸통만', 42900, 2500, 'body-dark'],
+  ['p07', 'c_lid', '220Ø 뚜껑', 25100, 1500, 'lid'],
+  ['p08', 'c_main', '175Ø 소 백색', 62000, 4000, 'bowl-s-white'],
+  ['p09', 'c_body', '175Ø 소 백색 몸통만', 35800, null, 'body-white'],
+  ['p10', 'c_lid', '175Ø 뚜껑', 26200, null, 'lid'],
+  ['p11', 'c_main', '105파이 중 흑색', 60000, 3000, 'bowl-s-dark'],
+  ['p12', 'c_main', 'SJ 70Ø 소 흑색', 68000, 3000, 'bowl-s-dark'],
+  ['p13', 'c_cutlery', '수저세트', 35500, 5000, 'cutlery'],
+  ['p14', 'c_bag', '봉투 중', 48000, 3000, 'bag'],
+  ['p15', 'c_bag', '봉투 대', 63000, 3000, 'bag'],
+];
+// 2026년 7월 힙춘향마라탕 시트 (매장별 수량)
+const SHEET_JULY = {
+  s_ansan: { p01: 15, p05: 1, p07: 1, p08: 2, p15: 2 },
+  s_gurae: { p01: 10, p02: 3, p03: 4, p04: 2, p05: 2, p06: 1, p08: 5, p11: 1, p12: 1, p13: 7, p14: 3, p15: 2 },
+  s_giheung: { p01: 2, p03: 1, p05: 1, p08: 2, p13: 3, p14: 3 },
+  s_cheongna: { p01: 8, p02: 4, p03: 3, p05: 4, p07: 2, p08: 5, p11: 1, p12: 1, p13: 7, p15: 4 },
+  s_jukjeon: { p01: 3, p03: 1, p04: 1, p06: 1, p08: 1, p13: 2 },
+  s_unseo: { p01: 2, p03: 1, p05: 1, p08: 1, p11: 1, p12: 1, p14: 1, p15: 1 },
+};
+const VIRTUAL_TOTALS = { '2026-06': 30000000, '2026-07': 40000000, '2026-08': 35000000, '2026-09': 50000000 };
+
+function seed(nowMs = Date.now()) {
+  const now = new Date(nowMs).toISOString();
+  const exp = new Date(nowMs + 24 * 3600 * 1000).toISOString();
+  const db = {
+    version: 1,
+    brands: [
+      { id: 'b_hct', name: '힙춘향마라탕', created_at: now },
+      { id: 'b_gogi', name: '고기육점', created_at: now },
+      { id: 'b_pasta', name: '파스타여기요', created_at: now },
+      { id: 'b_vips', name: '빕스', created_at: now },
+      { id: 'b_ashley', name: '애슐리', created_at: now },
+    ],
+    users: [
+      { id: 'u_dev', role: 'developer', name: '개발자', login: 'dev' },
+      { id: 'u_op', role: 'operator', name: '운영자', login: 'operator' },
+      { id: 'u_admA', role: 'admin', name: '힙춘향마라탕 대표', login: 'hct-admin', brand_id: 'b_hct' },
+      { id: 'u_admB', role: 'admin', name: '고기육점 대표', login: 'gogi-admin', brand_id: 'b_gogi' },
+      { id: 'u_own', role: 'owner', name: '구래점 점주', login: 'gurae' },
+    ],
+    stores: [
+      ['s_ansan', '안산고잔점'], ['s_gurae', '구래점'], ['s_giheung', '기흥점'],
+      ['s_cheongna', '청라점'], ['s_jukjeon', '죽전점'], ['s_unseo', '운서점'],
+    ].map(([id, name]) => ({ id, brand_id: 'b_hct', name, biz_no: '', ceo: '', phone: '', address: '' }))
+      .concat([{ id: 's_virtual', brand_id: 'b_gogi', name: '가상 매장', is_virtual: true, biz_no: '', ceo: '', phone: '', address: '' }]),
+    memberships: [{ id: 'm_own', user_id: 'u_own', brand_id: 'b_hct', store_id: 's_gurae', status: 'approved', applied_at: now, decided_at: now, decided_by: 'u_op', info: { store_name: '구래점' } }],
+    invite_codes: [
+      ['b_hct', 'K7M2QX'], ['b_gogi', 'R4TN8P'], ['b_pasta', 'W2HC6J'], ['b_vips', 'D9LF3V'], ['b_ashley', 'Q5BX7M'],
+    ].map(([brand_id, code]) => ({ id: 'ic_' + code, brand_id, code, created_at: now, expires_at: exp, revoked: false })),
+    categories: [
+      { id: 'c_main', name: '주용기' }, { id: 'c_body', name: '용기 몸통' }, { id: 'c_lid', name: '뚜껑' },
+      { id: 'c_cutlery', name: '수저' }, { id: 'c_bag', name: '봉투' },
+    ],
+    products: SHEET_PRODUCTS.map(([id, category_id, name, , , img]) => ({ id, category_id, name, pack_qty: null, active: true, img }))
+      .concat([{ id: 'p_virtual', category_id: 'c_main', name: '가상 테스트 상품', pack_qty: null, active: false, is_virtual: true, img: 'box' }]),
+    product_options: [],
+    brand_prices: SHEET_PRODUCTS.map(([pid, , , price]) => ({ id: 'bp_' + pid, brand_id: 'b_hct', product_id: pid, price, effective_from: '2026-07-01', created_at: now, created_by: 'u_op' })),
+    orders: [], order_items: [], refunds: [], shipments: [], notices: [], order_events: [], tax_invoices: [], brand_accounts: [], payback_payouts: [],
+    payback_rules: [{
+      id: 'pr_hct_2607', brand_id: 'b_hct', method: 'B', rate: null, effective_from: '2026-07', created_at: now, created_by: 'u_op',
+      per_box: Object.fromEntries(SHEET_PRODUCTS.map(([pid, , , , pb]) => [pid, pb])),
+    }],
+    monthly_closings: [],
+    audit_logs: [],
+    settings: {
+      revenue: { basis: 'paid', include_shipping: true, include_discount: true, price_includes_vat: true },
+      payback_vat: true,
+      shipping_fee: 0,
+      free_shipping_over: 0,
+      order_open: true,
+      signup_open: true,
+      carriers: [],
+      site_url: '',
+      invite_ttl_hours: 24,
+      approval_fields: ['store_name', 'biz_no', 'ceo', 'phone', 'address'],
+      bank_account: '',
+      footer: { ...FOOTER_DEFAULT },
+    },
+    dev_settings: { deploy_target: '미배포 (시제품)', session_hours: 12, allowed_admin_ips: '' },
+    seq: 1000,
+  };
+  // 7월 시트 이관 주문 (일자 미상 → 월말 기록)
+  const julyAt = kstISO('2026-07-31', '12:00');
+  const rule = db.payback_rules[0];
+  for (const [storeId, lines] of Object.entries(SHEET_JULY)) {
+    const oid = 'o_sheet_' + storeId.slice(2);
+    db.orders.push({ id: oid, no: 'SH-' + storeId.slice(2).toUpperCase(), brand_id: 'b_hct', store_id: storeId, user_id: null,
+      created_at: julyAt, paid_at: julyAt, shipped_at: julyAt, delivered_at: julyAt, status: 'delivered', pay_method: 'import',
+      shipping_fee: 0, discount: 0, source: 'sheet-2026-07', note: '7월 시트 이관 (주문 일자 미상, 월 합계로 기록)',
+      payback: { method: 'B', rate: null, rule_id: rule.id } });
+    for (const [pid, qty] of Object.entries(lines)) {
+      const p = SHEET_PRODUCTS.find((x) => x[0] === pid);
+      db.order_items.push({ id: `oi_${oid}_${pid}`, order_id: oid, product_id: pid, product_name: p[2], option_id: null, option_name: null,
+        unit_price: p[3], pack_qty: null, qty_boxes: qty, payback_per_box: rule.per_box[pid] });
+    }
+  }
+  // 가상 테스트 데이터 (고기육점 · 가상 매장 · is_virtual)
+  for (const [m, total] of Object.entries(VIRTUAL_TOTALS)) {
+    const boxesTotal = total / 10000, dim = daysInMonth(m);
+    let s = Number(m.replace('-', '')) % 9973; const w = [];
+    for (let d = 0; d < dim; d++) { s = (s * 1103 + 12345) % 9973; w.push(60 + (s % 80) + (d % 7 === 5 || d % 7 === 6 ? 40 : 0)); }
+    const wsum = w.reduce((a, b) => a + b, 0); let used = 0;
+    for (let d = 0; d < dim; d++) {
+      const q = d === dim - 1 ? boxesTotal - used : Math.floor((boxesTotal * w[d]) / wsum); used += q;
+      const at = kstISO(`${m}-${pad2(d + 1)}`, '14:00'); const oid = `o_v_${m}_${d + 1}`;
+      db.orders.push({ id: oid, no: 'V-' + m.replace('-', '') + pad2(d + 1), brand_id: 'b_gogi', store_id: 's_virtual', user_id: null,
+        created_at: at, paid_at: at, shipped_at: at, delivered_at: at, status: 'delivered', pay_method: 'card', shipping_fee: 0, discount: 0,
+        is_virtual: true, payback: null });
+      db.order_items.push({ id: 'oi_' + oid, order_id: oid, product_id: 'p_virtual', product_name: '가상 테스트 상품', option_id: null, option_name: null,
+        unit_price: 10000, pack_qty: null, qty_boxes: q, payback_per_box: null });
+    }
+  }
+  return db;
+}
+
+/* ---------- 권한 API ---------- */
+function makeApi(db, uid, clock = () => Date.now()) {
+  const nowISO = () => new Date(clock()).toISOString();
+  const me = db.users.find((u) => u.id === uid) || null;
+  const role = me ? me.role : 'guest';
+  const isDev = role === 'developer';
+  const isStaff = role === 'developer' || role === 'operator';
+  const membership = role === 'owner' ? db.memberships.filter((m) => m.user_id === uid).sort((a, b) => (a.applied_at < b.applied_at ? 1 : -1))[0] : null;
+  const ownerOk = !!(membership && membership.status === 'approved');
+  const myBrand = role === 'admin' ? me.brand_id : ownerOk ? membership.brand_id : null;
+  const myStore = ownerOk ? membership.store_id : null;
+  const nextId = (p) => `${p}_${(++db.seq).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const audit = (action, target, detail) => db.audit_logs.unshift({ id: nextId('al'), at: nowISO(), user_id: uid, user_name: me ? me.name : '-', role, action, target, detail });
+  const needStaff = () => { if (!isStaff) deny('개발자·운영자만 할 수 있습니다.'); };
+  const needBrandRead = (bid) => { if (isStaff) return; if (role === 'admin' && bid === me.brand_id) return; deny('다른 브랜드 정보는 열 수 없습니다.'); };
+  const brandName = (bid) => (db.brands.find((b) => b.id === bid) || {}).name || '(삭제된 브랜드)';
+  const activeCode = (bid) => db.invite_codes.filter((c) => c.brand_id === bid && !c.revoked).sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0] || null;
+  const genCode = () => { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let c; do { c = Array.from({ length: 6 }, () => A[Math.floor(Math.random() * A.length)]).join(''); } while (db.invite_codes.some((x) => x.code === c)); return c; };
+  const issueCode = (bid) => {
+    for (const c of db.invite_codes) if (c.brand_id === bid && !c.revoked) c.revoked = true;
+    const ttl = db.settings.invite_ttl_hours * 3600 * 1000;
+    const row = { id: nextId('ic'), brand_id: bid, code: genCode(), created_at: nowISO(), expires_at: new Date(clock() + ttl).toISOString(), revoked: false };
+    db.invite_codes.push(row); return row;
+  };
+  const shareText = (bid, code) => `${brandName(bid)} 가맹점 전용 주문몰\n접속 주소: ${db.settings.site_url || '(사이트 주소 미등록)'}\n가입 코드: ${code}\n위 코드로 가입을 신청해 주세요. 운영자 승인 후 주문할 수 있습니다.`;
+  const orderView = (o) => { const ix = dbIndex(db); const items = ix.items.get(o.id) || [];
+    return { ...o, brand_name: brandName(o.brand_id), store_name: (ix.stores.get(o.store_id) || {}).name || '-',
+      items, shipment: ix.shipments.get(o.id) || null, refunds: ix.refunds.get(o.id) || [],
+      events: (ix.events.get(o.id) || []).slice().sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)), tax_invoice: ix.tax.get(o.id) || null,
+      total: items.reduce((s, i) => s + i.unit_price * i.qty_boxes, 0) + (o.shipping_fee || 0) - (o.discount || 0) }; };
+  const orderTotalOf = (o) => itemsOf(db, o.id).reduce((s, i) => s + i.unit_price * i.qty_boxes, 0) + (o.shipping_fee || 0) - (o.discount || 0);
+  const logEvent = (oid, kind, text) => { if (!db.order_events) db.order_events = []; db.order_events.push({ id: nextId('ev'), order_id: oid, at: nowISO(), user_id: uid, kind, text }); };
+  const setStatus = (o, to) => { if (o.status === to) return; o.status = to; if (STATUS_EVENT[to]) logEvent(o.id, 'status', STATUS_EVENT[to]); };
+  const findOrder = (oid) => { const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.'); return o; };
+  const isClosed = (bid, month, virtual) => !!findClosing(db, bid, month, virtual);
+
+  const api = {
+    me: () => ({ user: me, role, membership, brand_id: myBrand, store_id: myStore, brand_name: myBrand ? brandName(myBrand) : membership ? brandName(membership.brand_id) : null }),
+
+    /* 브랜드 */
+    listBrands() {
+      if (isStaff) return db.brands.map((b) => ({ ...b, admins: db.users.filter((u) => u.role === 'admin' && u.brand_id === b.id).map((u) => u.name), code: activeCode(b.id) }));
+      if (myBrand) return db.brands.filter((b) => b.id === myBrand).map((b) => ({ id: b.id, name: b.name }));
+      deny();
+    },
+    addBrand(name, adminName) {
+      needStaff(); name = String(name || '').trim(); if (!name) bad('브랜드명을 입력해 주세요.');
+      if (db.brands.some((b) => b.name === name)) bad('같은 이름의 브랜드가 이미 있습니다.');
+      const b = { id: nextId('b'), name, created_at: nowISO() }; db.brands.push(b);
+      issueCode(b.id);
+      if (adminName) db.users.push({ id: nextId('u'), role: 'admin', name: String(adminName).trim(), login: nextId('admin'), brand_id: b.id });
+      audit('브랜드 추가', name, adminName ? `관리자 계정: ${adminName}` : '관리자 계정 없음');
+      return b;
+    },
+    renameBrand(bid, name) {
+      needStaff(); const b = db.brands.find((x) => x.id === bid); if (!b) bad('브랜드가 없습니다.');
+      name = String(name || '').trim(); if (!name) bad('브랜드명을 입력해 주세요.');
+      audit('브랜드 이름 변경', bid, `${b.name} → ${name}`); b.name = name; return b;
+    },
+    addAdmin(bid, adminName) {
+      needStaff(); if (!db.brands.some((b) => b.id === bid)) bad('브랜드가 없습니다.');
+      const u = { id: nextId('u'), role: 'admin', name: String(adminName || '').trim() || brandName(bid) + ' 대표', login: nextId('admin'), brand_id: bid };
+      db.users.push(u); audit('관리자 계정 연결', brandName(bid), u.name); return u;
+    },
+
+    /* 초대코드: 확인·공유는 관리자(자기 브랜드)도 가능. 승인과는 무관 */
+    getInvite(bid) {
+      needBrandRead(bid);
+      const c = activeCode(bid); if (!c) return null;
+      return { ...c, brand_name: brandName(bid), expired: new Date(c.expires_at).getTime() <= clock(), share_text: shareText(bid, c.code) };
+    },
+    reissueInvite(bid) {
+      needBrandRead(bid); const row = issueCode(bid); audit('초대코드 재발급', brandName(bid), `새 코드 ${row.code}, 만료 ${row.expires_at}`); return api.getInvite(bid);
+    },
+
+    /* 가입 신청: 코드는 소속 '신청'일 뿐 승인 아님 */
+    applyWithCode(code, info, existingUserId) {
+      if (db.settings.signup_open === false) bad('지금은 가입 신청을 받지 않습니다. 본사에 문의해 주세요.');
+      code = String(code || '').trim().toUpperCase();
+      const c = db.invite_codes.find((x) => x.code === code);
+      if (!c || c.revoked) bad('사용할 수 없는 가입 코드입니다. 본사에서 받은 최신 코드를 확인해 주세요.');
+      if (new Date(c.expires_at).getTime() <= clock()) bad('만료된 가입 코드입니다. 본사에 새 코드를 요청해 주세요.');
+      const need = { store_name: '상호(매장명)', biz_no: '사업자번호', ceo: '대표자명', phone: '연락처', address: '매장 주소' };
+      for (const f of db.settings.approval_fields) if (!String((info || {})[f] || '').trim()) bad(`${need[f]}을(를) 입력해 주세요.`);
+      let user = existingUserId ? db.users.find((u) => u.id === existingUserId && u.role === 'owner') : null;
+      if (!user) { user = { id: nextId('u'), role: 'owner', name: `${info.store_name} 점주`, login: nextId('owner') }; db.users.push(user); }
+      const m = { id: nextId('m'), user_id: user.id, brand_id: c.brand_id, store_id: null, status: 'pending', applied_at: nowISO(), info: { ...info }, code: c.code };
+      db.memberships.push(m);
+      return { user_id: user.id, membership_id: m.id, status: 'pending' };
+    },
+    listMemberships(status) {
+      needStaff();
+      return db.memberships.filter((m) => !status || m.status === status).map((m) => ({ ...m, brand_name: brandName(m.brand_id),
+        user_name: (db.users.find((u) => u.id === m.user_id) || {}).name, store_name: (db.stores.find((s) => s.id === m.store_id) || {}).name }))
+        .sort((a, b) => (a.applied_at < b.applied_at ? 1 : -1));
+    },
+    decideMembership(mid, approve, opts = {}) {
+      needStaff();
+      const m = db.memberships.find((x) => x.id === mid); if (!m) bad('신청을 찾을 수 없습니다.');
+      if (m.status !== 'pending') bad('이미 처리된 신청입니다.');
+      if (approve) {
+        let sid = opts.store_id;
+        if (!sid || sid === '__new') {
+          const s = { id: nextId('s'), brand_id: m.brand_id, name: m.info.store_name, biz_no: m.info.biz_no || '', ceo: m.info.ceo || '', phone: m.info.phone || '', address: m.info.address || '' };
+          db.stores.push(s); sid = s.id;
+        } else {
+          const s = db.stores.find((x) => x.id === sid);
+          if (!s || s.brand_id !== m.brand_id) bad('신청 브랜드의 매장만 연결할 수 있습니다.');
+          if (db.memberships.some((x) => x.store_id === sid && x.status === 'approved')) bad('이미 다른 점주가 연결된 매장입니다.');
+        }
+        m.status = 'approved'; m.store_id = sid;
+      } else { m.status = 'rejected'; m.reject_reason = opts.reason || ''; }
+      m.decided_at = nowISO(); m.decided_by = uid;
+      audit(approve ? '가입 승인' : '가입 반려', `${brandName(m.brand_id)} · ${m.info.store_name}`, approve ? '매장 연결 완료' : (opts.reason || '사유 미기재'));
+      return m;
+    },
+    listStores(bid) { needStaff(); return db.stores.filter((s) => (!bid || s.brand_id === bid) && !s.is_virtual); },
+
+    /* 카테고리·상품·옵션 */
+    listCategories() { if (!me) deny(); return db.categories; },
+    listProducts(bid) {
+      if (isStaff) {
+        return db.products.filter((p) => !p.is_virtual).map((p) => ({ ...p, options: db.product_options.filter((o) => o.product_id === p.id).sort((a, b) => a.sort - b.sort),
+          price: bid ? priceAt(db, bid, p.id, nowISO()) : null }));
+      }
+      if (role === 'owner') {
+        if (!ownerOk) deny('승인 후에 상품을 볼 수 있습니다.');
+        if (bid && bid !== myBrand) deny('다른 브랜드 가격은 열 수 없습니다.');
+      } else if (role === 'admin') {
+        if (bid !== me.brand_id) deny('다른 브랜드 가격은 열 수 없습니다.');
+      } else deny();
+      const b = myBrand;
+      return db.products.filter((p) => p.active && !p.is_virtual).map((p) => ({ ...p, options: db.product_options.filter((o) => o.product_id === p.id).sort((a, b2) => a.sort - b2.sort), price: priceAt(db, b, p.id, nowISO()) }))
+        .filter((p) => p.price);
+    },
+    saveProduct(input) {
+      needStaff();
+      const name = String(input.name || '').trim(); if (!name) bad('상품명을 입력해 주세요.');
+      const pack = input.pack_qty === '' || input.pack_qty == null ? null : Math.max(1, Math.floor(Number(input.pack_qty)));
+      if (input.pack_qty !== '' && input.pack_qty != null && !Number.isFinite(pack)) bad('입수량은 숫자로 입력해 주세요.');
+      let p = input.id ? db.products.find((x) => x.id === input.id) : null;
+      if (!p) { p = { id: nextId('p'), active: true, img: 'box' }; db.products.push(p); }
+      Object.assign(p, { name, category_id: input.category_id || p.category_id || db.categories[0].id, pack_qty: pack, active: input.active !== false });
+      if (input.image !== undefined) p.image = input.image || null;
+      if (input.code !== undefined) { const c = String(input.code || '').trim(); if (c && db.products.some((x) => x.id !== p.id && x.code === c)) bad('같은 상품코드가 이미 있습니다.'); p.code = c || null; }   // 상품 이미지 (실서비스: Storage 경로)
+      // 옵션: 여러 개 등록·수정·삭제
+      if (Array.isArray(input.options)) {
+        const keep = new Set();
+        input.options.forEach((o, i) => {
+          const nm = String(o.name || '').trim(); if (!nm) return;
+          let row = o.id ? db.product_options.find((x) => x.id === o.id && x.product_id === p.id) : null;
+          if (!row) { row = { id: nextId('po'), product_id: p.id }; db.product_options.push(row); }
+          row.name = nm; row.sort = i; keep.add(row.id);
+        });
+        db.product_options = db.product_options.filter((o) => o.product_id !== p.id || keep.has(o.id));
+      }
+      audit('상품 저장', name, `입수량 ${pack ?? '미등록'}, 옵션 ${db.product_options.filter((o) => o.product_id === p.id).length}개`);
+      return p;
+    },
+    setPrice(bid, pid, price, effectiveFrom) {
+      needStaff(); price = Math.round(Number(price));
+      if (!Number.isFinite(price) || price < 0) bad('단가를 숫자로 입력해 주세요.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom || '')) bad('적용 시작일을 선택해 주세요.');
+      const prev = priceAt(db, bid, pid, kstISO(effectiveFrom));
+      db.brand_prices.push({ id: nextId('bp'), brand_id: bid, product_id: pid, price, effective_from: effectiveFrom, created_at: nowISO(), created_by: uid });
+      audit('가격 변경', `${brandName(bid)} · ${(db.products.find((p) => p.id === pid) || {}).name}`, `${prev ? fmtExact(prev.price) : '미등록'} → ${fmtExact(price)} (${effectiveFrom}부터)`);
+    },
+    copyPrices(fromBid, toBid, effectiveFrom) {
+      needStaff(); let n = 0;
+      for (const p of db.products) { const pr = priceAt(db, fromBid, p.id, nowISO()); if (pr) { api.setPrice(toBid, p.id, pr.price, effectiveFrom); n++; } }
+      return n;
+    },
+
+    /* 주문 */
+    placeOrder(lines, payMethod, shipTo, clientKey) {
+      if (role !== 'owner' || !ownerOk) deny('승인된 점주만 주문할 수 있습니다.');
+      if (db.settings.order_open === false) bad('지금은 주문 접수를 잠시 멈췄습니다. 공지를 확인해 주세요.');
+      if (!['card', 'bank'].includes(payMethod)) bad('결제 방식을 선택해 주세요.');
+      if (!Array.isArray(lines) || !lines.length) bad('담긴 상품이 없습니다.');
+      if (clientKey) { const dup = db.orders.find((x) => x.user_id === uid && x.client_key === clientKey); if (dup) return { ...orderView(dup), duplicate: true }; }
+      const ship_to = cleanShipTo(shipTo);
+      const at = nowISO(); const rule = paybackRuleAt(db, myBrand, at);
+      const o = { id: nextId('o'), no: 'MO-' + kstDay(at).replace(/-/g, '').slice(2) + '-' + String(db.seq).slice(-4), brand_id: myBrand, store_id: myStore, user_id: uid,
+        // 결제창(PG) 연결 전: 카드도 결제 대기로 받고 운영자가 결제를 확인한다
+        created_at: at, paid_at: null, shipped_at: null, delivered_at: null,
+        status: 'pending_payment', pay_method: payMethod,
+        shipping_fee: 0, discount: 0, payback: rule ? { method: rule.method, rate: rule.rate, rule_id: rule.id } : null, ship_to, client_key: clientKey || null };
+      const items = [];
+      for (const ln of lines) {
+        const p = db.products.find((x) => x.id === ln.product_id && x.active && !x.is_virtual); if (!p) bad('판매하지 않는 상품이 있습니다.');
+        const price = priceAt(db, myBrand, p.id, at); if (!price) bad(`${p.name}은(는) 우리 브랜드 단가가 없어 주문할 수 없습니다.`);
+        const qty = Math.floor(Number(ln.qty_boxes)); if (!(qty >= 1)) bad('수량은 1박스 이상이어야 합니다.');
+        const opts = db.product_options.filter((x) => x.product_id === p.id);
+        let opt = null; if (opts.length) { opt = opts.find((x) => x.id === ln.option_id); if (!opt) bad(`${p.name}의 옵션을 선택해 주세요.`); }
+        items.push({ id: nextId('oi'), order_id: o.id, product_id: p.id, product_name: p.name, option_id: opt ? opt.id : null, option_name: opt ? opt.name : null,
+          unit_price: price.price, pack_qty: p.pack_qty, qty_boxes: qty,
+          payback_per_box: rule && rule.method === 'B' ? (rule.per_box[p.id] ?? null) : null });
+      }
+      o.shipping_fee = shippingFee(db.settings, items.reduce((s, i) => s + i.unit_price * i.qty_boxes, 0));
+      db.orders.push(o); db.order_items.push(...items);
+      logEvent(o.id, 'placed', o.status === 'paid' ? '주문 접수 · 결제 완료' : payMethod === 'card' ? '주문 접수 · 카드 결제 확인 대기' : '주문 접수 · 입금 대기');
+      return orderView(o);
+    },
+    /** 배송비 미리 계산 (장바구니·주문서) */
+    shippingFor(goods) { return { fee: shippingFee(db.settings, goods), over: Number(db.settings.free_shipping_over) || 0, base: Number(db.settings.shipping_fee) || 0 }; },
+    cancelMyOrder(oid) {
+      const o = db.orders.find((x) => x.id === oid);
+      if (role !== 'owner' || !ownerOk || !o || o.store_id !== myStore) deny('우리 매장 주문만 취소할 수 있습니다.');
+      if (o.status !== 'pending_payment') bad('입금 전 주문만 직접 취소할 수 있습니다. 운영자에게 문의해 주세요.');
+      setStatus(o, 'cancelled'); audit('점주 주문 취소', o.no, '입금 전 취소');
+    },
+    listOrders(filter = {}) {
+      if (isStaff) {
+        return db.orders.filter((o) => !o.is_virtual && (!filter.brand_id || o.brand_id === filter.brand_id) && (!filter.status || o.status === filter.status))
+          .sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).map(orderView);
+      }
+      if (role === 'owner' && ownerOk) return db.orders.filter((o) => o.store_id === myStore).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).map(orderView);
+      deny('주문 목록을 볼 수 없는 계정입니다.');
+    },
+    getOrder(oid) {
+      const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.');
+      if (isStaff) return orderView(o);
+      if (role === 'owner' && ownerOk && o.store_id === myStore) return orderView(o);
+      deny('다른 매장의 주문은 열 수 없습니다.');
+    },
+    confirmPayment(oid) {
+      needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o || o.status !== 'pending_payment') bad('결제 대기 주문이 아닙니다.');
+      o.paid_at = nowISO(); setStatus(o, 'paid'); audit('입금 확인', o.no, fmtExact(orderView(o).total));
+    },
+    setDiscount(oid, amount) {
+      needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.');
+      if (o.status !== 'pending_payment') bad('결제 전 주문에만 할인을 넣을 수 있습니다.');
+      amount = Math.max(0, Math.round(Number(amount) || 0)); o.discount = amount; audit('할인 적용', o.no, fmtExact(amount));
+    },
+    ship(oid, carrier, tracking) {
+      needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.');
+      if (!['paid', 'preparing', 'shipped'].includes(o.status)) bad('결제 확인 후, 배송 완료 전 주문만 송장을 넣을 수 있습니다.');
+      carrier = String(carrier || '').trim(); tracking = String(tracking || '').trim();
+      if (!carrier || !tracking) bad('택배사와 송장번호를 모두 입력해 주세요.');
+      const s = db.shipments.find((x) => x.order_id === oid);
+      if (s) { if (s.carrier !== carrier || s.tracking_no !== tracking) logEvent(oid, 'tracking', `송장 수정 · ${carrier} ${tracking}`); Object.assign(s, { carrier, tracking_no: tracking, updated_at: nowISO() }); }
+      else { db.shipments.push({ id: nextId('sh'), order_id: oid, carrier, tracking_no: tracking, created_at: nowISO() }); logEvent(oid, 'tracking', `송장 등록 · ${carrier} ${tracking}`); }
+      if (!o.shipped_at) o.shipped_at = nowISO(); setStatus(o, 'shipped');
+      audit('송장 입력', o.no, `${carrier} ${tracking}`);
+    },
+    deliver(oid) { needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o || o.status !== 'shipped') bad('배송 중인 주문이 아닙니다.'); o.delivered_at = nowISO(); setStatus(o, 'delivered'); },
+    /** 여러 주문 단계 한 번에: 입금 확인(paid) · 배송 준비(preparing) · 배송 완료(delivered) */
+    bulkStatus(ids, to) {
+      needStaff(); const from = { paid: 'pending_payment', preparing: 'paid', delivered: 'shipped' }[to];
+      if (!from) bad('바꿀 수 없는 단계입니다.');
+      let changed = 0;
+      for (const id of ids || []) { const o = db.orders.find((x) => x.id === id && !x.is_virtual); if (!o || o.status !== from) continue;
+        o[{ paid: 'paid_at', preparing: 'preparing_at', delivered: 'delivered_at' }[to]] = nowISO(); setStatus(o, to); changed++; }
+      audit('주문 단계 일괄 변경', `${changed}건`, STATUS_EVENT[to]);
+      return { changed, skipped: (ids || []).length - changed };
+    },
+    /** 송장 여러 건: 줄마다 저장하고 안 되는 줄은 이유를 돌려준다 */
+    bulkShip(rows) {
+      needStaff(); const out = [];
+      for (const r of rows || []) {
+        const no = String(r.no || '').trim();
+        try {
+          const o = db.orders.find((x) => x.no === no && !x.is_virtual); if (!o) bad('주문번호를 찾을 수 없습니다.');
+          api.ship(o.id, r.carrier, r.tracking_no); out.push({ no, ok: true });
+        } catch (e) { if (!(e instanceof ApiError) || e.code === 'FORBIDDEN') throw e; out.push({ no, ok: false, error: e.message }); }
+      }
+      audit('송장 일괄 입력', `${out.length}건`, `${out.filter((x) => x.ok).length}건 저장`);
+      return out;
+    },
+    cancelOrder(oid, reason) {
+      needStaff(); const o = db.orders.find((x) => x.id === oid); if (!o) bad('주문이 없습니다.');
+      if (o.status === 'cancelled' || o.status === 'refunded') bad('이미 취소된 주문입니다.');
+      const counted = !!o[EVENT_FIELD[db.settings.revenue.basis]];
+      if (counted) {
+        const origMonth = kstMonth(o[EVENT_FIELD[db.settings.revenue.basis]]);
+        const closed = isClosed(o.brand_id, origMonth, o.is_virtual);
+        db.refunds.push({ id: nextId('rf'), order_id: oid, created_at: nowISO(), full: true, lines: [], reason: reason || '', adjust_month: closed ? kstMonth(nowISO()) : null });
+        setStatus(o, 'refunded');
+        audit('주문 취소·환불', o.no, closed ? `원 주문월(${origMonth}) 마감 → ${kstMonth(nowISO())} 조정으로 차감` : `원 주문월 ${origMonth}에서 차감`);
+      } else { setStatus(o, 'cancelled'); audit('주문 취소', o.no, '결제 전 취소'); }
+    },
+
+    /* 공지 */
+    listNotices() {
+      if (isStaff) return db.notices.slice().sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+      if (role === 'owner' && ownerOk) return db.notices.filter((n) => n.target === 'all' || (n.target === 'brand' && n.brand_id === myBrand) || (n.target === 'store' && n.store_id === myStore))
+        .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+      deny('공지를 볼 수 없는 계정입니다.');
+    },
+    createNotice(n) {
+      needStaff(); const title = String(n.title || '').trim(); if (!title) bad('제목을 입력해 주세요.');
+      if (n.target === 'brand' && !n.brand_id) bad('대상 브랜드를 선택해 주세요.');
+      if (n.target === 'store' && !n.store_id) bad('대상 매장을 선택해 주세요.');
+      const row = { id: nextId('nt'), target: n.target || 'all', brand_id: n.target === 'all' ? null : n.brand_id || (db.stores.find((s) => s.id === n.store_id) || {}).brand_id,
+        store_id: n.target === 'store' ? n.store_id : null, title, body: String(n.body || ''), image: n.image || null, created_at: nowISO(), created_by: uid };
+      db.notices.push(row); return row;
+    },
+    deleteNotice(id) { needStaff(); db.notices = db.notices.filter((n) => n.id !== id); },
+
+    /* 매출 (관리자는 자기 브랜드만, 전체 보기 불가) */
+    salesReport(scope, base, n, virtual) {
+      let ids;
+      if (scope === 'all') { needStaff(); ids = db.brands.map((b) => b.id); }
+      else { needBrandRead(scope); ids = [scope]; }
+      return { ...salesReport(db, ids, base, n, virtual), basis: db.settings.revenue.basis };
+    },
+    boxesReport(month, virtual) {
+      needStaff();
+      return db.brands.map((b) => ({ brand_id: b.id, brand_name: b.name, ...revenue(db, b.id, month, virtual) }));
+    },
+
+    /* 페이백 */
+    listPaybackRules(bid) { needStaff(); return db.payback_rules.filter((r) => !bid || r.brand_id === bid).sort((a, b) => (a.effective_from < b.effective_from ? 1 : -1)); },
+    currentPaybackRule(bid) { needStaff(); return paybackRuleAt(db, bid, nowISO()); },
+    setPaybackRule(bid, rule) {
+      needStaff();
+      if (!['A', 'B'].includes(rule.method)) bad('정산 방식을 선택해 주세요.');
+      if (!/^\d{4}-\d{2}$/.test(rule.effective_from || '')) bad('적용 시작 월을 선택해 주세요.');
+      let rate = null, per_box = {};
+      if (rule.method === 'A') { rate = Number(rule.rate); if (!(rate >= 0 && rate <= 100)) bad('비율은 0~100 사이 숫자로 입력해 주세요.'); }
+      else for (const [pid, v] of Object.entries(rule.per_box || {})) per_box[pid] = v === '' || v == null ? null : Math.max(0, Math.round(Number(v)));
+      const row = { id: nextId('pr'), brand_id: bid, method: rule.method, rate, per_box, effective_from: rule.effective_from, created_at: nowISO(), created_by: uid };
+      db.payback_rules.push(row);
+      audit('페이백 기준 변경', brandName(bid), rule.method === 'A' ? `방식 A · ${rate}% · ${rule.effective_from}부터` : `방식 B · 품목 ${Object.values(per_box).filter((v) => v != null).length}개 · ${rule.effective_from}부터`);
+      return row;
+    },
+    settlement(month, virtual) {
+      needStaff();
+      return db.brands.map((b) => {
+        const r = revenue(db, b.id, month, virtual);
+        const rule = paybackRuleAt(db, b.id, kstISO(`${month}-01`));
+        return { brand_id: b.id, brand_name: b.name, ...r, rule, closing: findClosing(db, b.id, month, virtual) || null };
+      });
+    },
+    closeMonth(bid, month, virtual) {
+      needStaff();
+      if (month >= kstMonth(nowISO())) bad('지나간 달만 마감할 수 있습니다.');
+      if (findClosing(db, bid, month, virtual)) bad('이미 마감된 달입니다.');
+      const snap = revenue(db, bid, month, virtual);
+      db.monthly_closings.push({ id: nextId('mc'), brand_id: bid, month, is_virtual: !!virtual, snapshot: { ...snap, closed: true }, closed_at: nowISO(), closed_by: uid });
+      audit('월 마감', `${brandName(bid)} · ${month}${virtual ? ' (가상)' : ''}`, `매출 ${fmtExact(snap.amount)}, 페이백 ${fmtExact(snap.payback)}`);
+    },
+
+    /* 세금계산서: 계좌이체 주문만 (카드는 매출전표가 증빙) */
+    listTaxInvoices() {
+      const rows = (db.tax_invoices || []).filter((t) => isStaff || (role === 'owner' && ownerOk && t.store_id === myStore));
+      if (!isStaff && !(role === 'owner' && ownerOk)) deny('세금계산서는 해당 가맹점과 운영자만 볼 수 있습니다.');
+      const ix = dbIndex(db);
+      return rows.map((t) => { const o = ix.orders.get(t.order_id) || {}; return { ...t, order_no: o.no, store_name: (ix.stores.get(t.store_id) || {}).name || '-', brand_name: brandName(t.brand_id), order_created_at: o.created_at }; })
+        .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+    },
+    requestTaxInvoice(oid, buyer) {
+      const o = db.orders.find((x) => x.id === oid);
+      if (role !== 'owner' || !ownerOk || !o || o.store_id !== myStore) deny('우리 매장 주문만 신청할 수 있습니다.');
+      if (o.pay_method === 'card') bad('카드 결제 주문은 카드 매출전표가 증빙입니다. 세금계산서는 계좌이체 주문에서 신청해 주세요.');
+      if (o.pay_method !== 'bank') bad('이 주문은 세금계산서를 신청할 수 없습니다.');
+      if (!['paid', 'preparing', 'shipped', 'delivered'].includes(o.status)) bad('입금이 확인된 주문에서 신청할 수 있습니다.');
+      const b = cleanBuyer(buyer);
+      if (!db.tax_invoices) db.tax_invoices = [];
+      let t = db.tax_invoices.find((x) => x.order_id === oid);
+      if (t && t.status === 'issued') bad('이미 발행 기록이 있는 주문입니다.');
+      if (!t) { t = { id: nextId('tx'), order_id: oid, store_id: o.store_id, brand_id: o.brand_id, created_at: nowISO(), requested_by: uid }; db.tax_invoices.push(t); }
+      Object.assign(t, { buyer: b, order_total: orderTotalOf(o), status: 'requested', note: null, updated_at: nowISO() });
+      audit('세금계산서 신청', o.no, b.company);
+      return t;
+    },
+    returnTaxInvoice(oid, note) {
+      needStaff(); note = String(note || '').trim(); if (!note) bad('보완할 내용을 적어 주세요.');
+      const t = (db.tax_invoices || []).find((x) => x.order_id === oid); if (!t) bad('신청 내역이 없습니다.');
+      if (t.status !== 'requested') bad('발행 요청 상태에서만 보완 요청할 수 있습니다.');
+      Object.assign(t, { status: 'returned', note, updated_at: nowISO() }); audit('세금계산서 보완 요청', (db.orders.find((x) => x.id === oid) || {}).no, note);
+    },
+    issueTaxInvoice(oid, f) {
+      needStaff(); const t = (db.tax_invoices || []).find((x) => x.order_id === oid); if (!t) bad('신청 내역이 없습니다.');
+      if (t.status !== 'requested') bad('발행 요청 상태에서만 발행 기록을 남길 수 있습니다.');
+      const ap = String(f.approval || '').replace(/[\s-]/g, '').toUpperCase();
+      if (!/^[A-Z0-9]{24}$/.test(ap)) bad('승인번호 24자리를 확인해 주세요.');
+      const o = findOrder(oid); const tot = orderTotalOf(o);
+      const supply = Math.round(Number(f.supply)), tax = Math.round(Number(f.tax));
+      if (!Number.isFinite(supply) || !Number.isFinite(tax) || supply < 0 || tax < 0 || supply + tax !== tot) bad(`공급가액과 세액의 합이 주문 금액(${tot}원)과 같아야 합니다.`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) bad('발행일을 넣어 주세요.');
+      Object.assign(t, { status: 'issued', approval_no: ap, supply_amount: supply, tax_amount: tax, issued_date: f.date, order_total: tot, issued_by: uid, note: null, updated_at: nowISO() });
+      audit('세금계산서 발행 기록', o.no, ap);
+    },
+
+    /* 페이백 이체: 수취계좌 → 마감월 선택 → 이체 기록 (송금은 은행에서 직접) */
+    getBrandAccount(bid) { needBrandRead(bid); return (db.brand_accounts || []).find((a) => a.brand_id === bid) || null; },
+    setBrandAccount(bid, acc) {
+      needStaff(); if (!db.brands.some((b) => b.id === bid)) bad('브랜드가 없습니다.');
+      const row = { bank: String(acc.bank || '').trim(), account_no: String(acc.account_no || '').trim(), holder: String(acc.holder || '').trim() };
+      if (!row.bank || !row.account_no || !row.holder) bad('은행·계좌번호·예금주를 모두 입력해 주세요.');
+      if (!db.brand_accounts) db.brand_accounts = [];
+      const cur = db.brand_accounts.find((a) => a.brand_id === bid);
+      if (cur) Object.assign(cur, row, { updated_at: nowISO(), updated_by: uid }); else db.brand_accounts.push({ brand_id: bid, ...row, updated_at: nowISO(), updated_by: uid });
+      audit('수취계좌 저장', brandName(bid), `${row.bank} ${row.account_no} ${row.holder}`);
+    },
+    listPayouts(bid) {
+      if (bid) needBrandRead(bid); else needStaff();
+      return (db.payback_payouts || []).filter((p) => (!bid || p.brand_id === bid) && !p.is_virtual).map((p) => ({ ...p, brand_name: brandName(p.brand_id) }))
+        .sort((a, b) => (a.month < b.month ? 1 : -1));
+    },
+    recordPayout(bid, month, f) {
+      needStaff();
+      const c = findClosing(db, bid, month, false); if (!c) bad('마감한 달만 이체를 기록할 수 있습니다. 먼저 월 마감을 해 주세요.');
+      const acc = (db.brand_accounts || []).find((a) => a.brand_id === bid); if (!acc) bad('브랜드 수취계좌를 먼저 등록해 주세요.');
+      if ((db.payback_payouts || []).some((p) => p.brand_id === bid && p.month === month && !p.is_virtual)) bad('이미 이체를 기록한 달입니다.');
+      const payback = c.snapshot.payback || 0, vat = c.snapshot.payback_vat || 0;
+      if (payback + vat <= 0) bad('지급할 페이백이 없습니다. (0원 이하는 다음 달 정산에서 조정됩니다)');
+      if (!f || !f.at || Number.isNaN(new Date(f.at).getTime())) bad('이체한 시각을 넣어 주세요.');
+      if (!db.payback_payouts) db.payback_payouts = [];
+      const row = { id: nextId('po'), brand_id: bid, month, is_virtual: false, payback, vat, total: payback + vat, account: { bank: acc.bank, account_no: acc.account_no, holder: acc.holder },
+        transfer_ref: String(f.ref || '').trim() || null, transferred_at: new Date(f.at).toISOString(), memo: String(f.memo || '').trim() || null, created_by: uid, created_at: nowISO() };
+      db.payback_payouts.push(row);
+      audit('페이백 이체 기록', `${brandName(bid)} · ${month}`, fmtExact(row.total));
+      return row;
+    },
+
+    /* 기록·설정 */
+    auditLogs() { needStaff(); return db.audit_logs; },
+    publicInfo() { return { footer: { ...FOOTER_DEFAULT, ...(db.settings.footer || {}) }, site_url: db.settings.site_url, bank_account: db.settings.bank_account || '',
+      order_open: db.settings.order_open !== false, signup_open: db.settings.signup_open !== false }; },
+    getSettings() { needStaff(); return db.settings; },
+    saveSettings(patch) {
+      needStaff(); const before = JSON.stringify(db.settings);
+      if (patch.revenue) Object.assign(db.settings.revenue, patch.revenue);
+      for (const k of ['payback_vat', 'shipping_fee', 'free_shipping_over', 'order_open', 'signup_open', 'carriers', 'site_url', 'bank_account', 'approval_fields', 'footer']) if (k in patch) db.settings[k] = patch[k];
+      if (before !== JSON.stringify(db.settings)) audit('설정 변경', '운영 설정', Object.keys(patch).join(', '));
+    },
+    getDevSettings() { if (!isDev) deny('서버·배포·보안 설정은 개발자만 볼 수 있습니다.'); return db.dev_settings; },
+    saveDevSettings(p) { if (!isDev) deny('서버·배포·보안 설정은 개발자만 바꿀 수 있습니다.'); Object.assign(db.dev_settings, p); audit('보안 설정 변경', '개발자 설정', Object.keys(p).join(', ')); },
+  };
+  // 쓰기 호출이 끝나면 변경 번호를 올려 캐시를 비운다
+  for (const k of Object.keys(api)) {
+    if (READ_METHODS.has(k)) continue;
+    const fn = api[k];
+    api[k] = (...args) => { try { return fn(...args); } finally { db.rev = (db.rev || 0) + 1; } };
+  }
+  return api;
+}
+
+/* ---------- 메뉴: 역할별 화면 분리 ---------- */
+const NAV = {
+  developer: ['home', 'sales', 'boxes', 'payback', 'payouts', 'approvals', 'brands', 'orders', 'taxinvoices', 'notices', 'products', 'prices', 'audit', 'settings', 'qa', 'design', 'devsettings'],
+  operator: ['home', 'sales', 'boxes', 'payback', 'payouts', 'approvals', 'brands', 'orders', 'taxinvoices', 'notices', 'products', 'prices', 'audit', 'settings'],
+  admin: ['home', 'sales'],
+  owner: ['shop', 'cart', 'checkout', 'myorders', 'order', 'mytax', 'mynotices'],
+};
+
+/* ---------- 자체 검수 12개 + 추가 검사 ---------- */
+function runQA(baseNow = Date.now()) {
+  const results = [];
+  const check = (id, title, fn) => {
+    try { const detail = fn(); results.push({ id, title, ok: true, detail: detail || '' }); }
+    catch (e) { results.push({ id, title, ok: false, detail: e.message }); }
+  };
+  const expect = (cond, msg) => { if (!cond) throw new Error(msg); };
+  const denied = (fn) => { try { fn(); return false; } catch (e) { return e.code === 'FORBIDDEN'; } };
+  const clockAt = (iso) => () => new Date(iso).getTime();
+  const fresh = () => seed(new Date('2026-10-08T03:00:00Z').getTime());
+  const T = clockAt('2026-10-08T03:00:00Z');
+  const A = (db, uid, clk = T) => makeApi(db, uid, clk);
+  const SHIP = { name: '김점주', phone: '010-1111-2222', addr1: '경기 김포시 구래동 1', addr2: '1층' };
+
+  check('01', '역할별 화면 분리', () => {
+    const db = fresh();
+    expect(!NAV.owner.some((p) => NAV.operator.includes(p)), '점주 메뉴에 운영 메뉴가 섞임');
+    expect(!NAV.admin.includes('approvals'), '관리자 메뉴에 가입 승인이 있음');
+    expect(denied(() => A(db, 'u_own').listMemberships()), '점주가 가입 신청 목록을 열 수 있음');
+    expect(denied(() => A(db, 'u_admA').listMemberships()), '관리자가 가입 신청 목록을 열 수 있음');
+    expect(denied(() => A(db, 'u_op').getDevSettings()), '운영자가 보안 설정을 열 수 있음');
+    expect(!denied(() => A(db, 'u_dev').getDevSettings()), '개발자가 보안 설정을 못 엶');
+    return '점주·관리자·운영자·개발자 메뉴와 API 범위가 서로 다름';
+  });
+  check('02', '브랜드 추가 · 타 브랜드 차단', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    const nb = op.addBrand('검수브랜드', '검수 대표');
+    expect(op.listBrands().some((b) => b.id === nb.id), '추가한 브랜드가 목록에 없음');
+    const a = A(db, 'u_admA');
+    expect(denied(() => a.getInvite('b_gogi')), 'A 관리자가 B 코드를 열 수 있음');
+    expect(denied(() => a.listProducts('b_gogi')), 'A 관리자가 B 가격을 열 수 있음');
+    expect(denied(() => a.salesReport('b_gogi', '2026-09', 4, true)), 'A 관리자가 B 매출을 열 수 있음');
+    expect(denied(() => a.salesReport('all', '2026-09', 4, false)), 'A 관리자가 전체 매출을 열 수 있음');
+    const before = A(db, 'u_admB').getInvite('b_gogi').code;
+    op.renameBrand('b_gogi', '고기육점(변경)');
+    const after = A(db, 'u_admB').getInvite('b_gogi');
+    expect(after.code === before && after.brand_name === '고기육점(변경)', '이름 변경 후 코드 연결이 끊김');
+    expect(A(db, 'u_admB').salesReport('b_gogi', '2026-09', 1, true).total === 50000000, '이름 변경 후 매출 연결이 끊김');
+    return 'URL·API 직접 호출로도 다른 브랜드의 코드·가격·매출 차단, 이름 변경 후 id로 연결 유지';
+  });
+  check('03', '관리자 초대코드 한 번에 복사', () => {
+    const db = fresh(); db.settings.site_url = 'https://moa.example';
+    const inv = A(db, 'u_admA').getInvite('b_hct');
+    const want = `힙춘향마라탕 가맹점 전용 주문몰\n접속 주소: https://moa.example\n가입 코드: ${inv.code}\n위 코드로 가입을 신청해 주세요. 운영자 승인 후 주문할 수 있습니다.`;
+    expect(inv.share_text === want, '안내문 형식이 다름');
+    expect(denied(() => A(db, 'u_admA').decideMembership('m_own', true)), '공유 권한이 승인 권한으로 이어짐');
+    return '주소·코드·안내문 4줄이 정확한 형식으로 한 번에 만들어짐, 승인 권한과 분리';
+  });
+  check('04', '운영자 전체 브랜드 코드 확인·공유', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    for (const b of db.brands) { const i = op.getInvite(b.id); expect(i && i.share_text.includes(i.code), `${b.name} 코드 없음`); }
+    return `${db.brands.length}개 브랜드 모두 확인`;
+  });
+  check('05', '코드 입력 → 승인 대기 → 승인 → 주문', () => {
+    const db = fresh(); const code = A(db, 'u_admA').getInvite('b_hct').code;
+    const info = { store_name: '검수점', biz_no: '000-00-00000', ceo: '홍길동', phone: '010-0000-0000', address: '경기도' };
+    db.settings.signup_open = false; let shut = false; try { A(db, null).applyWithCode(code, info); } catch (e) { shut = /가입 신청/.test(e.message); }
+    expect(shut, '가입 접수를 꺼도 신청이 됨'); db.settings.signup_open = true;
+    const r = A(db, null).applyWithCode(code, info);
+    const p = A(db, r.user_id);
+    expect(p.me().membership.status === 'pending', '승인 대기 상태가 아님');
+    expect(denied(() => p.listProducts()), '승인 전에 가격이 열림');
+    expect(denied(() => A(db, 'u_admA').decideMembership(r.membership_id, true)), '관리자가 승인할 수 있음');
+    A(db, 'u_op').decideMembership(r.membership_id, true, { store_id: '__new' });
+    const p2 = A(db, r.user_id); const prods = p2.listProducts();
+    expect(prods.length === 15 && prods.every((x) => x.price.brand_id === 'b_hct'), '자기 브랜드 가격만 보여야 함');
+    expect(denied(() => p2.listProducts('b_gogi')), '점주가 다른 브랜드 가격을 열 수 있음');
+    const o = p2.placeOrder([{ product_id: 'p01', qty_boxes: 2 }], 'card', SHIP);
+    expect(o.total === 118000, '주문 금액 오류');
+    const late = A(db, null, clockAt('2026-10-09T04:00:00Z'));
+    let expired = false; try { late.applyWithCode(code, info); } catch (e) { expired = /만료/.test(e.message); }
+    expect(expired, '하루 지난 코드가 만료되지 않음');
+    return '신청→대기(가격 차단)→운영자 승인→자기 브랜드 상품 주문, 24시간 지난 코드는 거절';
+  });
+  check('06', '1·2·3·4개월 선택과 조회 범위', () => {
+    const exp = { 1: ['2026-09-01', '2026-09-30'], 2: ['2026-08-01', '2026-09-30'], 3: ['2026-07-01', '2026-09-30'], 4: ['2026-06-01', '2026-09-30'] };
+    for (const n of [1, 2, 3, 4]) { const r = periodRange('2026-09', n); expect(r.start === exp[n][0] && r.end === exp[n][1] && r.months.length === n, `${n}개월 범위 오류`); }
+    expect(periodRange('2026-02', 1).end === '2026-02-28', '2월 말일 오류');
+    return '9월 기준: 9월 / 8~9월 / 7~9월 / 6~9월, 시작·종료일 표시';
+  });
+  check('07', '따로·합쳐 보기와 합계 일치', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    const want = { 1: 50000000, 2: 85000000, 3: 125000000, 4: 155000000 };
+    const out = [];
+    for (const n of [1, 2, 3, 4]) {
+      const r = op.salesReport('all', '2026-09', n, true);
+      const sep = r.monthsData.reduce((s, m) => s + m.amount, 0);
+      const dailySum = r.monthsData.reduce((s, m) => s + m.daily.reduce((a, b) => a + b, 0), 0);
+      expect(r.total === want[n], `${n}개월 ${fmtWon(r.total)} (기대 ${fmtWon(want[n])})`);
+      expect(sep === r.total && dailySum === r.total, `${n}개월 따로/합쳐/일별 합계 불일치`);
+      out.push(`${n}개월 ${fmtWon(r.total)}`);
+    }
+    const zero = op.salesReport('b_pasta', '2026-09', 4, false);
+    expect(zero.monthsData.length === 4 && zero.monthsData.every((m) => m.amount === 0), '매출 없는 달이 빠짐');
+    return out.join(' · ');
+  });
+  check('08', '3박스 주문 = 3박스 집계', () => {
+    const db = fresh(); db.products.find((p) => p.id === 'p13').pack_qty = 500;
+    const o = A(db, 'u_own').placeOrder([{ product_id: 'p13', qty_boxes: 3 }], 'card', SHIP); A(db, 'u_op').confirmPayment(o.id);
+    expect(o.items[0].qty_boxes === 3 && o.items[0].pack_qty === 500, '주문 수량이 박스로 저장되지 않음');
+    const rows = A(db, 'u_op').boxesReport('2026-10', false);
+    expect(rows.find((r) => r.brand_id === 'b_hct').boxes.p13 === 3, '집계가 3박스가 아님');
+    return `500개입 수저세트 ${fmtBoxes(3, 500)} → 통계 3박스`;
+  });
+  check('09', '복수 옵션 저장·유지', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    op.saveProduct({ id: 'p13', name: '수저세트', category_id: 'c_cutlery', pack_qty: '', options: [{ name: '흑색' }, { name: '백색' }, { name: '크라프트' }] });
+    const reopened = JSON.parse(JSON.stringify(db));
+    const ops = A(reopened, 'u_op').listProducts().find((p) => p.id === 'p13').options;
+    expect(ops.length === 3 && ops.map((o) => o.name).join() === '흑색,백색,크라프트', '다시 열었을 때 옵션이 달라짐');
+    A(reopened, 'u_op').saveProduct({ id: 'p13', name: '수저세트', category_id: 'c_cutlery', pack_qty: '', options: [{ id: ops[0].id, name: '흑색(대)' }, { id: ops[2].id, name: '크라프트' }] });
+    const again = A(JSON.parse(JSON.stringify(reopened)), 'u_op').listProducts().find((p) => p.id === 'p13').options;
+    expect(again.length === 2 && again[0].name === '흑색(대)', '수정·삭제가 유지되지 않음');
+    const own = A(reopened, 'u_own');
+    let needOpt = false; try { own.placeOrder([{ product_id: 'p13', qty_boxes: 1 }], 'card', SHIP); } catch (e) { needOpt = /옵션/.test(e.message); }
+    expect(needOpt, '옵션 없이 주문이 됨');
+    return '옵션 3개 저장 → 다시 열기 → 수정·삭제 후에도 유지';
+  });
+  check('10', '공지·이미지·송장 대상별 표시', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    db.users.push({ id: 'u_qa2', role: 'owner', name: '청라점 점주' });
+    db.memberships.push({ id: 'm_qa2', user_id: 'u_qa2', brand_id: 'b_hct', store_id: 's_cheongna', status: 'approved', applied_at: '2026-10-01T00:00:00Z', info: {} });
+    db.stores.push({ id: 's_qa3', brand_id: 'b_gogi', name: '고기 1호점' });
+    db.users.push({ id: 'u_qa3', role: 'owner', name: '고기 점주' });
+    db.memberships.push({ id: 'm_qa3', user_id: 'u_qa3', brand_id: 'b_gogi', store_id: 's_qa3', status: 'approved', applied_at: '2026-10-01T00:00:00Z', info: {} });
+    op.createNotice({ target: 'store', store_id: 's_gurae', title: '구래점 전용', image: 'data:image/png;base64,iVBORw0KGgo=' });
+    op.createNotice({ target: 'brand', brand_id: 'b_hct', title: '힙춘향 공지' });
+    op.createNotice({ target: 'all', title: '전체 공지' });
+    const t = (uid) => A(db, uid).listNotices().map((n) => n.title).sort().join(',');
+    expect(t('u_own') === '구래점 전용,전체 공지,힙춘향 공지', '구래점 공지 대상 오류');
+    expect(t('u_qa2') === '전체 공지,힙춘향 공지', '같은 브랜드 다른 매장에 매장 공지가 보임');
+    expect(t('u_qa3') === '전체 공지', '다른 브랜드에 브랜드 공지가 보임');
+    expect(A(db, 'u_own').listNotices().find((n) => n.title === '구래점 전용').image, '이미지 누락');
+    const o = A(db, 'u_own').placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'card', SHIP); op.confirmPayment(o.id);
+    op.ship(o.id, '테스트택배', '1234-5678');
+    expect(A(db, 'u_own').getOrder(o.id).shipment.tracking_no === '1234-5678', '점주가 자기 송장을 못 봄');
+    expect(denied(() => A(db, 'u_qa2').getOrder(o.id)), '같은 브랜드 다른 매장이 주문을 열 수 있음');
+    expect(denied(() => A(db, 'u_admA').getOrder(o.id)), '관리자가 개별 주문을 열 수 있음');
+    return '매장·브랜드·전체 공지와 이미지·송장이 대상에게만 보임';
+  });
+  check('11', '방식 A: 5,000만 원 × 2.5%', () => {
+    const v = paybackA(50000000, 2.5); expect(v === 1250000, `${v}`); return `${fmtExact(v)}`;
+  });
+  check('12', '방식 B: 주용기 40박스×5,000 + 수저 30박스×1,500', () => {
+    const v = paybackB([{ boxes: 40, perBox: 5000 }, { boxes: 30, perBox: 1500 }]); expect(v === 245000, `${v}`); return `${fmtExact(v)}`;
+  });
+  // 추가 검사
+  check('+1', '7월 시트 재현 (힙춘향마라탕)', () => {
+    const db = fresh(); const r = revenue(db, 'b_hct', '2026-07');
+    expect(r.amount === 7054600, `매출 ${r.amount}`); expect(r.payback === 542500, `페이백 ${r.payback}`);
+    expect(r.payback + r.payback_vat === 596750, `부가세 포함 ${r.payback + r.payback_vat}`);
+    expect(r.boxes.p01 === 40 && r.boxes.p13 === 19, '품목 박스 수 불일치');
+    return `매출 ${fmtExact(r.amount)} · 페이백 ${fmtExact(r.payback)} · 부가세 포함 ${fmtExact(r.payback + r.payback_vat)}`;
+  });
+  check('+2', '한국 시간 월 경계', () => {
+    expect(kstMonth('2026-09-30T15:30:00Z') === '2026-10', 'UTC로 잘림'); expect(kstMonth('2026-09-30T14:59:00Z') === '2026-09', '경계 오류');
+    return '10/1 00:30(KST) 주문은 10월';
+  });
+  check('+3', '가격·페이백 변경 후에도 지난 주문 유지', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    op.setPrice('b_hct', 'p01', 99000, '2026-07-01');
+    op.setPaybackRule('b_hct', { method: 'A', rate: 10, effective_from: '2026-07' });
+    const r = revenue(db, 'b_hct', '2026-07');
+    expect(r.amount === 7054600 && r.payback === 542500, '지난 주문이 바뀜');
+    return '7월 매출·페이백 그대로 (주문 시점 스냅샷)';
+  });
+  check('+4', '마감월 반품 처리', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    op.closeMonth('b_hct', '2026-07', false);
+    op.cancelOrder('o_sheet_gurae', '검수');
+    expect(revenue(db, 'b_hct', '2026-07').amount === 7054600, '마감된 7월이 바뀜');
+    const g = A(db, 'u_op').getOrder('o_sheet_gurae').total;
+    const oct = revenue(db, 'b_hct', '2026-10');
+    expect(oct.amount === -g && oct.adjustments === -g, `10월 조정 ${oct.amount}`);
+    const db2 = fresh(); A(db2, 'u_op').cancelOrder('o_sheet_gurae', '검수');
+    expect(revenue(db2, 'b_hct', '2026-07').amount === 7054600 - g, '열린 달은 원래 주문월에서 차감돼야 함');
+    return '마감 전: 원래 주문월 차감 · 마감 후: 마감월 고정, 환불 발생 월에 조정';
+  });
+  check('+5', '표기 형식', () => {
+    expect(fmtWon(155000000) === '1억 5,500만 원', fmtWon(155000000)); expect(fmtBoxes(3, 500) === '3박스 (1,500개)', fmtBoxes(3, 500));
+    return '1억 5,500만 원 · 3박스 (1,500개)';
+  });
+  check('+6', '주문서: 배송지 필수 · 무료배송 기준 · 같은 주문서 한 번만', () => {
+    const db = fresh(); db.settings.shipping_fee = 3000; db.settings.free_shipping_over = 200000; const own = A(db, 'u_own');
+    let need = false; try { own.placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'bank', {}); } catch (e) { need = /받는 분/.test(e.message); }
+    expect(need, '배송지 없이 주문이 됨');
+    const o1 = own.placeOrder([{ product_id: 'p01', qty_boxes: 3 }], 'bank', SHIP, 'k1');
+    expect(o1.shipping_fee === 3000 && o1.total === 180000 && o1.status === 'pending_payment' && o1.ship_to.addr2 === '1층', `배송비·금액 ${o1.shipping_fee} ${o1.total}`);
+    const again = own.placeOrder([{ product_id: 'p01', qty_boxes: 3 }], 'bank', SHIP, 'k1');
+    expect(again.id === o1.id && db.orders.filter((x) => x.client_key === 'k1').length === 1, '같은 주문서가 두 건으로 접수됨');
+    const o2 = own.placeOrder([{ product_id: 'p01', qty_boxes: 4 }], 'card', SHIP, 'k2');
+    expect(o2.shipping_fee === 0, '20만 원 이상인데 배송비가 붙음');
+    expect(o2.status === 'pending_payment' && !o2.paid_at && /카드 결제 확인 대기/.test(o2.events[0].text), '카드 주문이 결제창 없이 결제 완료로 기록됨');
+    A(db, 'u_op').confirmPayment(o2.id);
+    db.settings.order_open = false; let closed = false; try { own.placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'bank', SHIP); } catch (e) { closed = /주문 접수/.test(e.message); }
+    expect(closed, '주문 접수를 꺼도 주문이 됨'); db.settings.order_open = true;
+    expect(denied(() => A(db, 'u_op').cancelMyOrder(o1.id)) && (() => { try { own.cancelMyOrder(o2.id); return false; } catch (e) { return true; } })(), '취소 권한 오류');
+    own.cancelMyOrder(o1.id); expect(own.getOrder(o1.id).status === 'cancelled', '입금 전 점주 취소 안 됨');
+    return '배송지 없으면 거절 · 3박스 177,000 + 배송비 3,000 · 23.6만 원 무료배송 · 카드는 결제 확인 대기 · 접수 꺼지면 거절 · 두 번 눌러도 1건 · 입금 전 점주 취소';
+  });
+  check('+7', '배송 일괄 처리와 처리 이력', () => {
+    const db = fresh(); const own = A(db, 'u_own'); const op = A(db, 'u_op');
+    const a = own.placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'bank', SHIP); const b = own.placeOrder([{ product_id: 'p03', qty_boxes: 1 }], 'card', SHIP);
+    op.cancelOrder(b.id, '검수'); const b2 = own.placeOrder([{ product_id: 'p03', qty_boxes: 1 }], 'card', SHIP);
+    const r1 = op.bulkStatus([a.id, b.id], 'paid'); expect(r1.changed === 1 && r1.skipped === 1, `입금 확인 ${JSON.stringify(r1)}`); op.bulkStatus([b2.id], 'paid');
+    const r2 = op.bulkStatus([a.id, b2.id], 'preparing'); expect(r2.changed === 2, `배송 준비 ${JSON.stringify(r2)}`);
+    const res = op.bulkShip([{ no: a.no, carrier: 'CJ대한통운', tracking_no: '6000-1111' }, { no: 'NOPE', carrier: 'CJ', tracking_no: '1' }, { no: b2.no, carrier: '', tracking_no: '2' }]);
+    expect(res[0].ok && !res[1].ok && /찾을 수 없/.test(res[1].error) && !res[2].ok, `일괄 결과 ${JSON.stringify(res)}`);
+    expect(op.getOrder(a.id).status === 'shipped' && op.getOrder(b2.id).status === 'preparing', '상태 반영 오류');
+    expect(denied(() => A(db, 'u_admA').bulkShip([])) && denied(() => own.bulkStatus([a.id], 'delivered')), '관리자·점주가 일괄 처리함');
+    const ev = own.getOrder(a.id).events.map((e) => e.text);
+    expect(ev.length === 5 && /주문 접수/.test(ev[0]) && ev.includes('배송 준비 시작') && ev.some((t) => /송장 등록/.test(t)), ev.join(' / '));
+    return '입금 확인·배송 준비·송장 일괄 (틀린 줄은 이유 표시), 점주에게 처리 이력 5단계';
+  });
+  check('+8', '세금계산서: 신청 → 보완 요청 → 발행 기록', () => {
+    const db = fresh(); const own = A(db, 'u_own'); const op = A(db, 'u_op');
+    const bank = own.placeOrder([{ product_id: 'p01', qty_boxes: 2 }], 'bank', SHIP); const card = own.placeOrder([{ product_id: 'p01', qty_boxes: 1 }], 'card', SHIP);
+    const buyer = { biz_no: '123-45-67890', company: '힙춘향마라탕 구래점', ceo: '김점주', address: '경기 김포' };
+    let msg = ''; try { own.requestTaxInvoice(bank.id, buyer); } catch (e) { msg = e.message; } expect(/입금/.test(msg), '입금 전 신청이 됨');
+    msg = ''; try { own.requestTaxInvoice(card.id, buyer); } catch (e) { msg = e.message; } expect(/매출전표/.test(msg), '카드 주문 신청이 됨');
+    op.confirmPayment(bank.id);
+    msg = ''; try { own.requestTaxInvoice(bank.id, { ...buyer, biz_no: '123' }); } catch (e) { msg = e.message; } expect(/10자리/.test(msg), '사업자번호 검사 안 됨');
+    own.requestTaxInvoice(bank.id, buyer);
+    expect(denied(() => A(db, 'u_admA').listTaxInvoices()), '관리자가 세금계산서를 봄');
+    op.returnTaxInvoice(bank.id, '업태·종목을 적어 주세요');
+    expect(own.listTaxInvoices()[0].status === 'returned' && /업태/.test(own.listTaxInvoices()[0].note), '보완 사유가 점주에게 안 보임');
+    own.requestTaxInvoice(bank.id, { ...buyer, biz_type: '음식점', biz_item: '마라탕' });
+    msg = ''; try { op.issueTaxInvoice(bank.id, { approval: '20261009-41000000-12345678', supply: 100000, tax: 10000, date: '2026-10-09' }); } catch (e) { msg = e.message; }
+    expect(/118000/.test(msg), '합계 검사 안 됨');
+    op.issueTaxInvoice(bank.id, { approval: '20261009-41000000-12345678', supply: 107273, tax: 10727, date: '2026-10-09' });
+    const t = own.listTaxInvoices()[0]; expect(t.status === 'issued' && t.approval_no.length === 24 && own.getOrder(bank.id).tax_invoice.status === 'issued', '발행 기록 오류');
+    return '입금 전·카드 주문 거절 → 신청 → 보완 요청 사유 표시 → 공급가+세액=118,000 확인 후 발행 기록';
+  });
+  check('+9', '페이백 이체 기록 (마감월 · 수취계좌)', () => {
+    const db = fresh(); const op = A(db, 'u_op');
+    let msg = ''; try { op.recordPayout('b_hct', '2026-07', { at: '2026-08-05T01:00:00Z' }); } catch (e) { msg = e.message; } expect(/마감/.test(msg), '마감 전 기록이 됨');
+    op.closeMonth('b_hct', '2026-07', false);
+    msg = ''; try { op.recordPayout('b_hct', '2026-07', { at: '2026-08-05T01:00:00Z' }); } catch (e) { msg = e.message; } expect(/계좌/.test(msg), '계좌 없이 기록이 됨');
+    op.setBrandAccount('b_hct', { bank: '국민', account_no: '123-45-6789', holder: '힙춘향' });
+    const row = op.recordPayout('b_hct', '2026-07', { ref: '거래 0001', at: '2026-08-05T01:00:00Z', memo: '7월분' });
+    expect(row.total === 596750 && row.account.bank === '국민', `이체 금액 ${row.total}`);
+    msg = ''; try { op.recordPayout('b_hct', '2026-07', { at: '2026-08-05T01:00:00Z' }); } catch (e) { msg = e.message; } expect(/이미/.test(msg), '두 번 기록됨');
+    expect(A(db, 'u_admA').listPayouts('b_hct').length === 1 && denied(() => A(db, 'u_admB').listPayouts('b_hct')) && denied(() => A(db, 'u_own').recordPayout('b_hct', '2026-08', {})), '이체 기록 권한 오류');
+    return '마감 전·계좌 없으면 거절 → 7월 마감 스냅샷 596,750원 기록 → 같은 달 두 번 불가, 관리자는 자기 브랜드만';
+  });
+  return results;
+}
+
+if (typeof module !== 'undefined') module.exports = { FOOTER_DEFAULT, seed, makeApi, runQA, revenue, salesReport, periodRange, fmtWon, fmtBoxes, fmtExact, paybackA, paybackB, kstMonth };
+;
+/* =====================================================================
+   모아상점 실데이터 연결 (Supabase)
+   · 읽기: 로그인한 사람의 권한(RLS)으로 보이는 행만 받아 화면용 캐시(db)로 바꾼다.
+   · 매출: 서버 함수 revenue_range 결과를 그대로 쓴다 (매출 계산은 서버 한 곳).
+   · 쓰기: 화면에서 먼저 검사·반영한 뒤 서버 함수/테이블에 저장하고, 끝나면 다시 읽는다.
+   ===================================================================== */
+const LIVE_CONFIG = {
+  url: 'https://rtesymycvsvbuqlorsoy.supabase.co',
+  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0ZXN5bXljdnN2YnVxbG9yc295Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0OTgzOTIsImV4cCI6MjEwNzA3NDM5Mn0.6MMrnjFzm2LBl-qT0KScO_tcgpYgbIPDbHZynqJfrU4',
+  revenueFrom: '2025-12-01',
+};
+
+/* ---------- 상품 그림 종류 (이름으로 추정) ---------- */
+function artFor(name) {
+  const n = String(name || '');
+  if (/수저/.test(n)) return 'cutlery';
+  if (/봉투/.test(n)) return 'bag';
+  if (/뚜껑/.test(n)) return 'lid';
+  const white = /백색|화이트/.test(n);
+  if (/몸통/.test(n)) return white ? 'body-white' : 'body-dark';
+  if (white) return 'bowl-s-white';
+  if (/(^|\s)(소|105|SJ)|70Ø|105/.test(n) && !/220/.test(n)) return 'bowl-s-dark';
+  if (/용기|Ø|파이/.test(n)) return 'bowl-l-dark';
+  return 'box';
+}
+const ym = (d) => (d ? String(d).slice(0, 7) : null);
+const num = (v) => (v == null ? v : Number(v));
+
+/* ---------- 서버 행 → 화면 캐시 ---------- */
+function mapToDb(raw, me) {
+  const profiles = raw.profiles || [];
+  const userName = (id) => (profiles.find((p) => p.id === id) || {}).name || (id ? '사용자' : '시스템');
+  const userRole = (id) => (profiles.find((p) => p.id === id) || {}).role || 'developer';
+  const s = raw.app_settings || {};
+  const pub = raw.public_settings || {};
+  const db = {
+    version: 1, live: true, rev: 1, seq: 1000,
+    brands: (raw.brands || []).map((b) => ({ id: b.id, name: b.name, created_at: b.created_at })),
+    users: profiles.map((p) => ({ id: p.id, role: p.role, name: p.name, login: p.email, email: p.email, brand_id: p.brand_id || undefined })),
+    stores: (raw.stores || []).map((x) => ({ id: x.id, brand_id: x.brand_id, name: x.name, biz_no: x.biz_no || '', ceo: x.ceo || '', phone: x.phone || '', address: x.address || '',
+      is_virtual: x.name === '가상 매장' || undefined })),
+    memberships: (raw.memberships || []).map((m) => ({ id: m.id, user_id: m.user_id, brand_id: m.brand_id, store_id: m.store_id, status: m.status, info: m.info || {},
+      code: m.code, reject_reason: m.reject_reason, applied_at: m.applied_at, decided_at: m.decided_at, decided_by: m.decided_by })),
+    invite_codes: (raw.invite_codes || []).map((c) => ({ id: c.id, brand_id: c.brand_id, code: c.code, created_at: c.created_at, expires_at: c.expires_at, revoked: !!c.revoked })),
+    categories: (raw.categories || []).slice().sort((a, b) => a.sort - b.sort).map((c) => ({ id: c.id, name: c.name })),
+    products: (raw.products || []).map((p) => ({ id: p.id, category_id: p.category_id, name: p.name, pack_qty: num(p.pack_qty), active: !!p.active,
+      image: p.image_path || null, code: p.code || null, img: artFor(p.name), is_virtual: p.name === '가상 테스트 상품' || undefined })),
+    product_options: (raw.product_options || []).map((o) => ({ id: o.id, product_id: o.product_id, name: o.name, sort: o.sort })),
+    brand_prices: (raw.brand_prices || []).map((p) => ({ id: p.id, brand_id: p.brand_id, product_id: p.product_id, price: num(p.price), effective_from: p.effective_from,
+      created_at: p.created_at, created_by: p.created_by })),
+    orders: (raw.orders || []).map((o) => ({ id: o.id, no: o.no, brand_id: o.brand_id, store_id: o.store_id, user_id: o.user_id, status: o.status, pay_method: o.pay_method,
+      shipping_fee: num(o.shipping_fee) || 0, discount: num(o.discount) || 0, is_virtual: !!o.is_virtual,
+      created_at: o.created_at, paid_at: o.paid_at, preparing_at: o.preparing_at, shipped_at: o.shipped_at, delivered_at: o.delivered_at,
+      ship_to: o.ship_to || null, client_key: o.client_key || null,
+      payback: o.payback_method ? { method: o.payback_method, rate: o.payback_rate_bp == null ? null : o.payback_rate_bp / 100, rule_id: o.payback_rule_id } : null,
+      note: o.pay_method === 'import' ? '시트 이관 주문 (주문 일자 미상, 월 합계로 기록)' : undefined })),
+    order_items: (raw.order_items || []).map((i) => ({ id: i.id, order_id: i.order_id, product_id: i.product_id, product_name: i.product_name, option_id: i.option_id, option_name: i.option_name,
+      unit_price: num(i.unit_price), pack_qty: num(i.pack_qty), qty_boxes: num(i.qty_boxes), payback_per_box: num(i.payback_per_box) })),
+    refunds: (raw.refunds || []).map((r) => ({ id: r.id, order_id: r.order_id, created_at: r.created_at, full: !!r.full_refund, lines: r.lines || [], reason: r.reason || '', adjust_month: ym(r.adjust_month) })),
+    shipments: (raw.shipments || []).map((x) => ({ id: x.id, order_id: x.order_id, carrier: x.carrier, tracking_no: x.tracking_no, created_at: x.created_at })),
+    order_events: (raw.order_events || []).map((e) => ({ id: 'ev' + e.id, order_id: e.order_id, at: e.at, user_id: e.user_id, kind: e.kind, text: e.text })),
+    tax_invoices: (raw.tax_invoices || []).map((t) => ({ ...t, order_total: num(t.order_total), supply_amount: num(t.supply_amount), tax_amount: num(t.tax_amount) })),
+    brand_accounts: (raw.brand_accounts || []).map((a) => ({ brand_id: a.brand_id, bank: a.bank, account_no: a.account_no, holder: a.holder, updated_at: a.updated_at })),
+    payback_payouts: (raw.payback_payouts || []).map((x) => ({ ...x, month: ym(x.month), payback: num(x.payback), vat: num(x.vat), total: num(x.total) })),
+    notices: (raw.notices || []).map((n) => ({ id: n.id, target: n.target, brand_id: n.brand_id, store_id: n.store_id, title: n.title, body: n.body || '', image: n.image_path || null,
+      created_at: n.created_at, created_by: n.created_by })),
+    payback_rules: (raw.payback_rules || []).map((r) => ({ id: r.id, brand_id: r.brand_id, method: r.method, rate: r.rate_bp == null ? null : r.rate_bp / 100, per_box: r.per_box || {},
+      effective_from: ym(r.effective_month), created_at: r.created_at, created_by: r.created_by })),
+    monthly_closings: (raw.monthly_closings || []).map((c) => ({ id: c.id, brand_id: c.brand_id, month: ym(c.month), is_virtual: !!c.is_virtual,
+      snapshot: { ...c.snapshot, month: ym(c.snapshot && c.snapshot.month) || ym(c.month), closed: true }, closed_at: c.closed_at, closed_by: c.closed_by })),
+    audit_logs: (raw.audit_logs || []).map((l) => ({ id: l.id, at: l.at, user_id: l.user_id, user_name: userName(l.user_id), role: userRole(l.user_id), action: l.action, target: l.target,
+      detail: typeof l.detail === 'string' ? l.detail : summarizeDetail(l.detail) })),
+    settings: {
+      revenue: { basis: s.revenue_basis || 'paid', include_shipping: s.include_shipping !== false, include_discount: s.include_discount !== false, price_includes_vat: true },
+      payback_vat: s.payback_vat !== false,
+      shipping_fee: num(s.shipping_fee ?? pub.shipping_fee) || 0,
+      free_shipping_over: num(s.free_shipping_over ?? pub.free_shipping_over) || 0,
+      order_open: (s.order_open ?? pub.order_open) !== false, signup_open: (s.signup_open ?? pub.signup_open) !== false,
+      carriers: s.carriers || [],
+      site_url: s.site_url ?? pub.site_url ?? '',
+      bank_account: s.bank_account ?? pub.bank_account ?? '',
+      footer: { ...FOOTER_DEFAULT, ...(s.footer || pub.footer || {}) },
+      invite_ttl_hours: 24,
+      approval_fields: ['store_name', 'biz_no', 'ceo', 'phone', 'address'],
+    },
+    dev_settings: { deploy_target: 'Supabase moa-store (서울)', session_hours: 12, allowed_admin_ips: '' },
+    server_revenue: {},
+  };
+  for (const r of raw.revenue || []) {
+    for (const m of r.rows || []) {
+      const month = ym(m.month);
+      db.server_revenue[`${r.brand_id}|${month}|${!!r.virtual}`] = { ...m, brand_id: r.brand_id, month, daily: (m.daily || []).map(Number), amount: num(m.amount),
+        payback: num(m.payback), payback_vat: num(m.payback_vat), payback_missing_boxes: num(m.payback_missing_boxes) || 0, adjustments: num(m.adjustments) || 0,
+        boxes: Object.fromEntries(Object.entries(m.boxes || {}).map(([k, v]) => [k, Number(v)])), closed: !!m.closed };
+    }
+  }
+  // 내 프로필이 목록에 없으면(점주·관리자) 넣어 둔다
+  if (me && !db.users.some((u) => u.id === me.id)) db.users.push({ id: me.id, role: me.role, name: me.name, login: me.email, email: me.email, brand_id: me.brand_id || undefined });
+  return db;
+}
+function summarizeDetail(d) {
+  if (!d || typeof d !== 'object') return d == null ? '' : String(d);
+  const keys = ['role', 'price', 'effective_from', 'method', 'status', 'month', 'code', 'reason', 'original_month', 'closed'];
+  const parts = keys.filter((k) => d[k] != null).map((k) => `${k}: ${typeof d[k] === 'object' ? JSON.stringify(d[k]) : d[k]}`);
+  return parts.join(', ') || JSON.stringify(d).slice(0, 160);
+}
+
+/* ---------- 서버 연결 ---------- */
+const Live = {
+  client: null, session: null, profile: null, loading: false, lastLoad: 0, error: null,
+  enabled() { return typeof window !== 'undefined' && !!window.MOA_LIVE; },
+  init() {
+    if (!window.supabase || !window.supabase.createClient) { this.error = '서버 연결 도구를 불러오지 못했습니다. 인터넷 연결을 확인한 뒤 새로고침해 주세요.'; return false; }
+    this.client = window.supabase.createClient(LIVE_CONFIG.url, LIVE_CONFIG.anonKey, { auth: { persistSession: true, autoRefreshToken: true } });
+    return true;
+  },
+  async fetchAll(table, opts = {}) {
+    const out = []; const size = 1000;
+    for (let from = 0; ; from += size) {
+      let q = this.client.from(table).select(opts.select || '*');
+      if (opts.order) q = q.order(opts.order, { ascending: !!opts.asc });
+      const { data, error } = await q.range(from, from + size - 1);
+      if (error) throw error;
+      out.push(...(data || []));
+      if (!data || data.length < size || (opts.limit && out.length >= opts.limit)) break;
+    }
+    return opts.limit ? out.slice(0, opts.limit) : out;
+  },
+  async rpc(name, args) {
+    const { data, error } = await this.client.rpc(name, args || {});
+    if (error) throw error;
+    return data;
+  },
+  async loadProfile() {
+    const uid = this.session && this.session.user.id;
+    if (!uid) return null;
+    const { data, error } = await this.client.from('profiles').select('*').eq('id', uid).maybeSingle();
+    if (error) throw error;
+    this.profile = data;
+    return data;
+  },
+  /** 로그인한 사람에게 보이는 모든 데이터를 읽어 화면 캐시로 만든다 */
+  async load() {
+    this.loading = true;
+    try {
+      const me = this.profile || (await this.loadProfile());
+      if (!me) throw new Error('프로필을 찾을 수 없습니다. 잠시 뒤 다시 로그인해 주세요.');
+      const staff = me.role === 'developer' || me.role === 'operator';
+      const tables = ['brands', 'profiles', 'stores', 'memberships', 'invite_codes', 'categories', 'products', 'product_options', 'brand_prices',
+        'payback_rules', 'shipments', 'refunds', 'notices', 'monthly_closings', 'order_events', 'tax_invoices', 'brand_accounts', 'payback_payouts'];
+      const raw = {};
+      await Promise.all(tables.map(async (t) => { raw[t] = await this.fetchAll(t); }));
+      [raw.orders, raw.order_items] = await Promise.all([this.fetchAll('orders', { order: 'created_at' }), this.fetchAll('order_items')]);
+      if (staff) {
+        raw.audit_logs = await this.fetchAll('audit_logs', { order: 'id', limit: 300 });
+        const { data } = await this.client.from('app_settings').select('*').eq('id', 1).maybeSingle();
+        raw.app_settings = data;
+      }
+      raw.public_settings = await this.rpc('get_public_settings').catch(() => ({}));
+      // 매출은 서버 함수 하나로: 운영자·개발자는 전체 브랜드, 관리자는 자기 브랜드
+      const to = addMonths(kstMonth(new Date().toISOString()), 1) + '-01';
+      const brandIds = staff ? raw.brands.map((b) => b.id) : me.role === 'admin' ? [me.brand_id] : [];
+      raw.revenue = [];
+      await Promise.all(brandIds.flatMap((bid) => [false, true].map(async (virtual) => {
+        const rows = await this.rpc('revenue_range', { p_brand: bid, p_from: LIVE_CONFIG.revenueFrom, p_to: to, p_virtual: virtual });
+        raw.revenue.push({ brand_id: bid, virtual, rows: rows || [] });
+      })));
+      this.lastLoad = Date.now();
+      return mapToDb(raw, me);
+    } finally { this.loading = false; }
+  },
+
+  /* ---------- 쓰기: 화면 API 이름 그대로 ---------- */
+  writes: {
+    async addBrand(name, adminEmail) {
+      const { data, error } = await Live.client.from('brands').insert({ name: String(name).trim() }).select('id').single();
+      if (error) throw error;
+      await Live.rpc('reissue_invite', { p_brand: data.id });
+      if (adminEmail && /@/.test(adminEmail)) await Live.rpc('set_role_by_email', { p_email: adminEmail, p_role: 'admin', p_brand: data.id });
+    },
+    async renameBrand(bid, name) { const { error } = await Live.client.from('brands').update({ name: String(name).trim() }).eq('id', bid); if (error) throw error; },
+    async addAdmin(bid, email) { await Live.rpc('set_role_by_email', { p_email: email, p_role: 'admin', p_brand: bid }); },
+    async setRole(email, role) { await Live.rpc('set_role_by_email', { p_email: email, p_role: role, p_brand: null }); },
+    async reissueInvite(bid) { await Live.rpc('reissue_invite', { p_brand: bid }); },
+    async decideMembership(mid, approve, opts = {}) {
+      await Live.rpc('decide_membership', { p_mid: mid, p_approve: !!approve, p_store: opts.store_id && opts.store_id !== '__new' ? opts.store_id : null, p_reason: opts.reason || null });
+    },
+    async saveProduct(input) {
+      const row = { name: String(input.name).trim(), category_id: input.category_id, active: input.active !== false,
+        pack_qty: input.pack_qty === '' || input.pack_qty == null ? null : Math.max(1, Math.floor(Number(input.pack_qty))) };
+      if (input.code !== undefined) row.code = String(input.code || '').trim() || null;
+      if (input.image !== undefined) row.image_path = input.image || null;
+      let pid = input.id;
+      if (pid) { const { error } = await Live.client.from('products').update(row).eq('id', pid); if (error) throw error; }
+      else { const { data, error } = await Live.client.from('products').insert(row).select('id').single(); if (error) throw error; pid = data.id; }
+      if (Array.isArray(input.options)) {
+        const opts = input.options.map((o, i) => ({ id: o.id || undefined, name: String(o.name || '').trim(), sort: i })).filter((o) => o.name);
+        const keep = opts.filter((o) => o.id).map((o) => o.id);
+        let del = Live.client.from('product_options').delete().eq('product_id', pid);
+        if (keep.length) del = del.not('id', 'in', `(${keep.join(',')})`);
+        const { error: e1 } = await del; if (e1) throw e1;
+        for (const o of opts) {
+          const { error } = o.id ? await Live.client.from('product_options').update({ name: o.name, sort: o.sort }).eq('id', o.id)
+            : await Live.client.from('product_options').insert({ product_id: pid, name: o.name, sort: o.sort });
+          if (error) throw error;
+        }
+      }
+    },
+    async setPrice(bid, pid, price, from) {
+      const { error } = await Live.client.from('brand_prices').insert({ brand_id: bid, product_id: pid, price: Math.round(Number(price)), effective_from: from, created_by: Live.session.user.id });
+      if (error) throw error;
+    },
+    async copyPrices(fromBid, toBid, from, cache) {
+      const rows = cache.products.filter((p) => !p.is_virtual).map((p) => [p, priceAt(cache, fromBid, p.id, new Date().toISOString())]).filter(([, pr]) => pr)
+        .map(([p, pr]) => ({ brand_id: toBid, product_id: p.id, price: pr.price, effective_from: from, created_by: Live.session.user.id }));
+      if (!rows.length) return;
+      const { error } = await Live.client.from('brand_prices').insert(rows); if (error) throw error;
+    },
+    async placeOrder(lines, pay, shipTo, clientKey) {
+      await Live.rpc('place_order', { p_lines: lines.map((l) => ({ product_id: l.product_id, option_id: l.option_id || '', qty_boxes: l.qty_boxes })), p_pay: pay,
+        p_ship_to: shipTo || {}, p_client_key: clientKey || null });
+    },
+    async cancelMyOrder(oid) { await Live.rpc('owner_cancel_order', { p_oid: oid }); },
+    async bulkStatus(ids, to) { await Live.rpc('bulk_status', { p_ids: ids, p_to: to }); },
+    async bulkShip(rows) {
+      const res = await Live.rpc('bulk_ship', { p_rows: rows.map((r) => ({ no: r.no, carrier: r.carrier, tracking_no: r.tracking_no })) });
+      const bad = (res || []).filter((r) => !r.ok);
+      if (bad.length) throw new Error(`${bad.length}건은 저장하지 못했습니다: ${bad.slice(0, 3).map((r) => `${r.no} (${r.error})`).join(', ')}`);
+    },
+    async requestTaxInvoice(oid, buyer) { await Live.rpc('request_tax_invoice', { p_oid: oid, p_buyer: buyer }); },
+    async returnTaxInvoice(oid, note) { await Live.rpc('tax_invoice_return', { p_oid: oid, p_note: note }); },
+    async issueTaxInvoice(oid, f) {
+      await Live.rpc('tax_invoice_issue', { p_oid: oid, p_approval: f.approval, p_supply: Math.round(Number(f.supply)), p_tax: Math.round(Number(f.tax)), p_date: f.date });
+    },
+    async setBrandAccount(bid, acc) {
+      const { error } = await Live.client.from('brand_accounts').upsert({ brand_id: bid, bank: String(acc.bank).trim(), account_no: String(acc.account_no).trim(), holder: String(acc.holder).trim(),
+        updated_at: new Date().toISOString(), updated_by: Live.session.user.id }, { onConflict: 'brand_id' });
+      if (error) throw error;
+    },
+    async recordPayout(bid, month, f) { await Live.rpc('record_payout', { p_brand: bid, p_month: month + '-01', p_ref: f.ref || null, p_at: new Date(f.at).toISOString(), p_memo: f.memo || null }); },
+    async confirmPayment(oid) { const { error } = await Live.client.from('orders').update({ status: 'paid', paid_at: new Date().toISOString() }).eq('id', oid).eq('status', 'pending_payment'); if (error) throw error; },
+    async setDiscount(oid, amount) { const { error } = await Live.client.from('orders').update({ discount: Math.max(0, Math.round(Number(amount) || 0)) }).eq('id', oid); if (error) throw error; },
+    async ship(oid, carrier, tracking, cache) {
+      const { error } = await Live.client.from('shipments').upsert({ order_id: oid, carrier: String(carrier).trim(), tracking_no: String(tracking).trim() }, { onConflict: 'order_id' });
+      if (error) throw error;
+      const o = cache.orders.find((x) => x.id === oid) || {};
+      const { error: e2 } = await Live.client.from('orders').update({ status: 'shipped', shipped_at: o.shipped_at || new Date().toISOString() }).eq('id', oid);
+      if (e2) throw e2;
+    },
+    async deliver(oid) { const { error } = await Live.client.from('orders').update({ status: 'delivered', delivered_at: new Date().toISOString() }).eq('id', oid); if (error) throw error; },
+    async cancelOrder(oid, reason) { await Live.rpc('cancel_order', { p_oid: oid, p_reason: reason || null }); },
+    async createNotice(n, cache) {
+      const row = { target: n.target || 'all', title: String(n.title).trim(), body: n.body || '', image_path: n.image || null, created_by: Live.session.user.id,
+        brand_id: n.target === 'all' ? null : n.brand_id || null, store_id: n.target === 'store' ? n.store_id : null };
+      if (n.target === 'store') row.brand_id = ((cache && cache.stores.find((x) => x.id === n.store_id)) || {}).brand_id || null;
+      const { error } = await Live.client.from('notices').insert(row); if (error) throw error;
+    },
+    async deleteNotice(id) { const { error } = await Live.client.from('notices').delete().eq('id', id); if (error) throw error; },
+    async setPaybackRule(bid, rule) {
+      const per_box = {};
+      for (const [k, v] of Object.entries(rule.per_box || {})) per_box[k] = v === '' || v == null ? null : Math.max(0, Math.round(Number(v)));
+      const { error } = await Live.client.from('payback_rules').insert({ brand_id: bid, method: rule.method, rate_bp: rule.method === 'A' ? Math.round(Number(rule.rate) * 100) : null,
+        per_box: rule.method === 'B' ? per_box : {}, effective_month: rule.effective_from + '-01', created_by: Live.session.user.id });
+      if (error) throw error;
+    },
+    async closeMonth(bid, month, virtual) { await Live.rpc('close_month', { p_brand: bid, p_month: month + '-01', p_virtual: !!virtual }); },
+    async saveSettings(p) {
+      const row = {};
+      if (p.revenue) Object.assign(row, { revenue_basis: p.revenue.basis, include_shipping: !!p.revenue.include_shipping, include_discount: !!p.revenue.include_discount });
+      for (const k of ['payback_vat', 'shipping_fee', 'free_shipping_over', 'order_open', 'signup_open', 'carriers', 'site_url', 'bank_account', 'footer']) if (k in p) row[k] = p[k];
+      const { error } = await Live.client.from('app_settings').update(row).eq('id', 1); if (error) throw error;
+    },
+    async changePassword(pw) { const { error } = await Live.client.auth.updateUser({ password: pw }); if (error) throw error; },
+    async sendReset(email) {
+      const { error } = await Live.client.auth.resetPasswordForEmail(String(email).trim(), { redirectTo: location.origin + location.pathname });
+      if (error) throw error;
+    },
+    async applyWithCode(code, info) { await Live.rpc('apply_with_code', { p_code: String(code).trim().toUpperCase(), p_info: info }); },
+  },
+};
+/** 서버 오류를 사람이 읽을 문장으로 */
+function liveErrorText(e) {
+  const m = (e && (e.message || e.error_description || e.msg)) || String(e || '');
+  if (/Invalid login credentials/i.test(m)) return '이메일 또는 비밀번호가 맞지 않습니다.';
+  if (/Email not confirmed/i.test(m)) return '이메일 인증이 아직 안 됐습니다. 메일함의 인증 링크를 누른 뒤 로그인해 주세요.';
+  if (/User already registered/i.test(m)) return '이미 가입한 이메일입니다. 로그인해 주세요.';
+  if (/Password should be at least|weak.?password/i.test(m)) return '비밀번호는 8자 이상으로 정해 주세요.';
+  if (/should be different from the old password/i.test(m)) return '지금 쓰는 비밀번호와 다른 비밀번호로 정해 주세요.';
+  if (/rate limit|only request this after/i.test(m)) return '잠시 뒤 다시 시도해 주세요. 메일은 짧은 시간에 여러 번 보낼 수 없습니다.';
+  if (/Auth session missing|JWT expired/i.test(m)) return '로그인이 풀렸습니다. 다시 로그인해 주세요.';
+  if (/duplicate key|already exists/i.test(m)) return '같은 이름(또는 코드)이 이미 있습니다.';
+  if (/permission denied|row-level security/i.test(m)) return '이 계정에는 권한이 없습니다.';
+  if (/Failed to fetch|NetworkError|network/i.test(m)) return '서버에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.';
+  return m;
+}
+
+/* ---------- 관찰 장치: 화면 오류 · 실제 휴대폰 속도 · 핵심 행동 (기준서 R-04, W-03, M-06~M-09) ----------
+   · 이름·전화·사업자번호·주소는 보내지 않는다. 사람은 로그인 id로만 연결된다.
+   · 로그인 전 기록은 로그인 뒤 함께 보낸다(최대 60줄). 보내기 실패는 조용히 버린다(화면에는 영향 없음).
+   · 이벤트 목록과 쓰임새: docs/tracking-plan.md */
+const Obs = {
+  q: [], timer: null, errSeen: {}, errCount: 0, t0: Date.now(), opened: false,
+  on() { return typeof window !== 'undefined' && window.MOA_LIVE === true; },
+  device() {
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'ios';
+    if (/Android/.test(ua)) return 'android';
+    return /Windows|Macintosh|Linux|CrOS/.test(ua) ? 'desktop' : 'other';
+  },
+  standalone() { try { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch (e) { return false; } },
+  push(kind, name, value, props) {
+    if (!this.on()) return;
+    const page = (typeof state !== 'undefined' && state && state.page) || '';
+    const uid = (Live.session && Live.session.user && Live.session.user.id) || null;   // 누른 사람 기준(로그아웃 뒤 남의 이름으로 가지 않게)
+    this.q.push({ uid, kind, name: String(name).slice(0, 64), value: typeof value === 'number' && isFinite(value) ? value : null, props: props || {},
+      version: String(window.MOA_VERSION || '').slice(0, 40), page: String(page).slice(0, 40), device: this.device(), standalone: this.standalone() });
+    if (this.q.length > 60) this.q.splice(0, this.q.length - 60);
+    if (!this.timer) this.timer = setTimeout(() => this.flush(), 10000);
+  },
+  take() {
+    const uid = Live.session && Live.session.user && Live.session.user.id; if (!uid) return null;
+    return this.q.splice(0, 50).filter((r) => !r.uid || r.uid === uid).map(({ uid: _u, ...r }) => ({ ...r, user_id: uid }));
+  },
+  async flush() {
+    clearTimeout(this.timer); this.timer = null;
+    if (!Live.client || !this.q.length) return;
+    const rows = this.take(); if (!rows || !rows.length) return;
+    try { await Live.client.from('client_logs').insert(rows); } catch (e) { /* 기록 실패는 버린다 */ }
+    if (this.q.length) this.timer = setTimeout(() => this.flush(), 10000);
+  },
+  beacon() {   // 화면을 떠날 때: 남은 기록을 keepalive 요청으로 보낸다
+    if (!Live.session || !Live.session.access_token || !this.q.length) return;
+    const rows = this.take(); if (!rows || !rows.length) return;
+    try {
+      fetch(LIVE_CONFIG.url + '/rest/v1/client_logs', { method: 'POST', keepalive: true, body: JSON.stringify(rows),
+        headers: { apikey: LIVE_CONFIG.anonKey, Authorization: 'Bearer ' + Live.session.access_token, 'Content-Type': 'application/json', Prefer: 'return=minimal' } }).catch(() => {});
+    } catch (e) {}
+  },
+  error(msg, src, line, col, stack) {
+    const key = String(msg).slice(0, 120); this.errSeen[key] = (this.errSeen[key] || 0) + 1;
+    if (this.errSeen[key] > 3 || ++this.errCount > 20) return;   // 같은 오류 3번, 한 번 열 때 20번까지만
+    this.push('error', 'JS Error', null, { msg: String(msg).slice(0, 300), src: String(src || '').split('/').pop().slice(0, 60), line: line || 0, col: col || 0, stack: String(stack || '').slice(0, 800) });
+  },
+};
+/** 핵심 행동 기록: 이름은 "대상 + 동작"(M-07). 시제품(demo)에서는 아무것도 하지 않는다. */
+function track(name, props) { try { Obs.push('event', name, null, props); } catch (e) {} }
+
+/* 실사용 속도: LCP(가장 큰 내용이 보인 시각), INP(누른 뒤 반응까지, 상위 2%), CLS(화면 밀림). 첫 번째로 화면을 떠날 때 한 번 보낸다. */
+const Vitals = {
+  lcp: null, cls: 0, win: 0, winStart: 0, last: 0, inp: {}, sent: false,
+  start() {
+    if (!Obs.on() || typeof PerformanceObserver === 'undefined') return;
+    const types = PerformanceObserver.supportedEntryTypes || [];
+    const watch = (type, cb, extra) => { if (!types.includes(type)) return; try { new PerformanceObserver((l) => l.getEntries().forEach(cb)).observe({ type, buffered: true, ...(extra || {}) }); } catch (e) {} };
+    watch('largest-contentful-paint', (e) => { this.lcp = e.startTime; });
+    watch('layout-shift', (e) => {
+      if (e.hadRecentInput) return;
+      if (this.win && e.startTime - this.last < 1000 && e.startTime - this.winStart < 5000) this.win += e.value; else { this.win = e.value; this.winStart = e.startTime; }
+      this.last = e.startTime; this.cls = Math.max(this.cls, this.win);
+    });
+    watch('event', (e) => { if (e.interactionId) this.inp[e.interactionId] = Math.max(this.inp[e.interactionId] || 0, e.duration); }, { durationThreshold: 16 });
+  },
+  report() {
+    if (this.sent || !Obs.on()) return; this.sent = true;
+    let nav = ''; try { nav = (performance.getEntriesByType('navigation')[0] || {}).type || ''; } catch (e) {}
+    const p = { nav, conn: (navigator.connection && navigator.connection.effectiveType) || '' };
+    if (this.lcp != null) Obs.push('vital', 'LCP', Math.round(this.lcp), p);
+    Obs.push('vital', 'CLS', Math.round(this.cls * 1000) / 1000, p);
+    const d = Object.values(this.inp).sort((a, b) => b - a);
+    if (d.length) Obs.push('vital', 'INP', Math.round(d[Math.min(d.length - 1, Math.floor(d.length / 50))]), { ...p, n: d.length });
+  },
+};
+if (typeof window !== 'undefined' && window.MOA_LIVE === true) {
+  window.addEventListener('error', (e) => Obs.error(e.message, e.filename, e.lineno, e.colno, e.error && e.error.stack));
+  window.addEventListener('unhandledrejection', (e) => { const r = e.reason || {}; Obs.error('unhandledrejection: ' + (r.message || String(r)), '', 0, 0, r.stack); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { Vitals.report(); Obs.beacon(); } else Obs.t0 = Date.now();   // 돌아오면 '앱을 연 시각'을 새로 잰다
+  });
+  window.addEventListener('pagehide', () => { Vitals.report(); Obs.beacon(); });
+  Vitals.start();
+}
+
+if (typeof module !== 'undefined' && module.exports) module.exports = { mapToDb, artFor, Live, liveErrorText, LIVE_CONFIG, Obs, track };
+;
+/* =====================================================================
+   모아상점 화면 — 모든 데이터는 makeApi(db, uid) 를 통해서만 읽고 쓴다.
+   화면은 아래 공통 컴포넌트를 조합만 한다.
+   ===================================================================== */
+const STORE_KEY = 'moa-proto-v1';
+const LIVE = typeof window !== 'undefined' && !!window.MOA_LIVE;   // 실서비스(Supabase) 모드
+let db = LIVE ? null : loadDb();
+const nowMonth = () => kstMonth(new Date().toISOString());
+const initRoute = (() => { try { const [p, q] = (location.hash || '').replace('#', '').split('.'); return { page: p || '', param: q || '' }; } catch (e) { return { page: '', param: '' }; } })();
+const state = {
+  uid: LIVE ? null : loadUid(), page: initRoute.page, liveView: LIVE ? 'boot' : 'app', busy: 0, authTab: 'login', param: initRoute.param,
+  virtual: false, base: nowMonth(), n: 4, view: 'separate', cumul: false, scope: 'all',
+  boxesMonth: addMonths(nowMonth(), -3), settleMonth: addMonths(nowMonth(), -3),
+  of: { brand: '', quick: '', q: '', period: '' }, sel: {}, orderLimit: 50, priceBrand: 'b_hct', taxFilter: 'requested', payBrand: '', payMonth: '',
+  cardQty: {}, cardDefault: {}, cartFrom: {}, cardOpt: {}, shipDraft: null, payDraft: null, clientKey: null, myFilter: 'all',
+  cart: {}, shopCat: 'all', shopSort: 'default', modal: null, confirm: null, copyFallback: null, qa: null,
+  navOpen: false, acctOpen: false, noticeId: null, shopQ: '', rollPrev: {}, lastChartKey: '', replay: false, notifyNext: null, dismissed: loadPref('dismissed') || '',
+};
+const charts = {};
+
+/* ---------- 저장 ---------- */
+function normalize(d) {
+  d.settings.footer = { ...FOOTER_DEFAULT, ...(d.settings.footer || {}) };
+  d.rev = (d.rev || 0) + 1;
+  return d;
+}
+function loadDb() {
+  try { const raw = localStorage.getItem(STORE_KEY); if (raw) { const d = JSON.parse(raw); if (d && d.version === 1) return normalize(d); } } catch (e) {}
+  return normalize(seed());
+}
+function loadUid() { try { return localStorage.getItem(STORE_KEY + ':uid') || null; } catch (e) { return null; } }
+function loadPref(k) { try { return localStorage.getItem(STORE_KEY + ':' + k); } catch (e) { return null; } }
+function savePref(k, v) { try { localStorage.setItem(STORE_KEY + ':' + k, v); } catch (e) {} }
+function save() {
+  if (LIVE) return;   // 실서비스에서는 서버가 원본이다
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); localStorage.setItem(STORE_KEY + ':uid', state.uid || ''); }
+  catch (e) { toast('브라우저 저장 공간이 부족해 이번 변경은 새로고침하면 사라집니다.'); }
+}
+let pendingOps = [];
+/** 실서비스: 화면에서 먼저 검사·반영(낙관적)하고, 서버 저장은 pendingOps 에 모았다가 act()가 보낸다 */
+const api = () => {
+  const a = makeApi(db, state.uid);
+  if (!LIVE) return a;
+  const w = {};
+  for (const k of Object.keys(a)) {
+    if (READ_METHODS.has(k) || !Live.writes[k]) { w[k] = a[k]; continue; }
+    w[k] = (...args) => { const r = a[k](...args); const snap = db; pendingOps.push(() => Live.writes[k](...args, snap)); return r; };
+  }
+  return w;
+};
+
+/* ---------- 표기·작은 도구 ---------- */
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ROLE = { developer: '개발자', operator: '운영자', admin: '관리자', owner: '가맹점주', guest: '방문자' };
+const STATUS = { pending_payment: ['결제 대기', 'st-pay'], paid: ['결제 확인', 'st-paid'], preparing: ['배송 준비', 'st-paid'], shipped: ['배송 중', 'st-ship'], delivered: ['배송 완료', 'st-ship'], cancelled: ['취소', 'st-err'], refunded: ['환불', 'st-err'] };
+/** 주문 상태 이름: 계좌이체 결제 대기는 '입금 대기' */
+const statusName = (o, st = o.status) => (st === 'pending_payment' && o.pay_method === 'bank' ? '입금 대기' : STATUS[st][0]);
+const OStatus = (o) => Chip(statusName(o), STATUS[o.status][1]);
+const TAX = { requested: ['발행 요청', 'st-pay'], returned: ['보완 요청', 'st-err'], issued: ['발행 완료', 'st-ship'] };
+const MEMBER = { pending: ['승인 대기', 'st-wait'], approved: ['승인', 'st-done'], rejected: ['반려', 'st-err'] };
+const PAY = { card: '카드', bank: '계좌이체', import: '시트 이관' };
+const PAGE_LABEL = { sales: '매출', boxes: '품목별 박스', payback: '페이백·마감', approvals: '가입 승인', brands: '브랜드·초대코드', orders: '주문·송장', notices: '공지',
+  products: '상품·옵션', prices: '브랜드 단가', audit: '감사 로그', settings: '운영 설정', qa: '검수', design: '설계 문서', devsettings: '개발자 설정',
+  home: '홈', shop: '주문하기', cart: '장바구니', checkout: '주문서', myorders: '주문내역', order: '주문 상세', mytax: '세금계산서', mynotices: '공지',
+  payouts: '페이백 지급', taxinvoices: '세금계산서' };
+const NAV_GROUPS = [['현황', ['home', 'sales', 'boxes', 'payback', 'payouts']], ['가맹', ['approvals', 'brands']], ['주문', ['orders', 'taxinvoices', 'notices']], ['상품', ['products', 'prices']],
+  ['기록', ['audit', 'settings']], ['개발자', ['qa', 'design', 'devsettings']]];
+const fmtDate = (iso) => { if (!iso) return '-'; const p = kstParts(iso); return `${p.y}.${pad2(p.m)}.${pad2(p.d)} ${pad2(p.hh)}:${pad2(p.mi)}`; };
+const fmtDateOnly = (iso) => { if (!iso) return '-'; const p = kstParts(iso); return `${p.y}.${pad2(p.m)}.${pad2(p.d)}`; };
+const fmtDay = (d) => d.replace(/-/g, '.');
+const monthLabel = (m) => `${m.slice(0, 4)}년 ${Number(m.slice(5))}월`;
+const rangeSentence = (start, end) => { const [y1, m1, d1] = start.split('-').map(Number), [y2, m2, d2] = end.split('-').map(Number); return `${y1}년 ${m1}월 ${d1}일 ~ ${y1 === y2 ? '' : y2 + '년 '}${m2}월 ${d2}일`; };
+function fmtShort(n) {
+  const a = Math.abs(n), s = n < 0 ? '-' : '';
+  if (a >= 1e8) return s + (Math.round(a / 1e7) / 10).toString() + '억';
+  if (a >= 1e4) return s + Math.round(a / 1e4).toLocaleString('ko-KR') + '만';
+  return s + a.toLocaleString('ko-KR');
+}
+const packText = (p) => (p ? `${p.toLocaleString('ko-KR')}개입 / 박스` : '입수량 미등록');
+const cartCount = () => Object.values(state.cart).reduce((s, l) => s + l.qty, 0);
+function toast(msg) {
+  document.querySelectorAll('.toast').forEach((t) => t.remove());
+  const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = msg;
+  document.body.appendChild(t); setTimeout(() => t.remove(), 2600);
+}
+function guard(fn) { try { return fn(); } catch (e) { if (e instanceof ApiError) return { __error: e }; throw e; } }
+
+/* ---------- 공통 컴포넌트 ---------- */
+const Chip = (text, cls = '') => `<span class="chip ${cls}">${esc(text)}</span>`;
+const StatusChip = (map, key) => { const [l, c] = map[key] || [key, 'st-wait']; return Chip(l, c); };
+const opts = (options, value) => options.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value) ? 'selected' : ''}>${esc(l)}</option>`).join('');
+const Select = (id, change, options, value, label, cls = '') => `<span class="selwrap"><select class="select ${cls}" id="${id}" data-change="${change}" aria-label="${esc(label)}">${opts(options, value)}</select></span>`;
+const FieldSelect = (id, name, options, value, label) => `<div class="field"><label for="${id}" class="label">${label}</label><span class="selwrap"><select class="select" id="${id}" name="${name}">${opts(options, value)}</select></span></div>`;
+const Field = (id, name, label, attrs = '', value = '') => `<div class="field"><label for="${id}" class="label">${label}</label><input id="${id}" name="${name}" value="${esc(value)}" ${attrs}></div>`;
+const Seg = (label, items) => `<div class="seg" role="group" aria-label="${label}" style="--n:${items.length};--i:${Math.max(0, items.findIndex((x) => x[3]))}">${items.map(([act, v, text, on]) => `<button data-act="${act}" data-v="${v}" aria-pressed="${!!on}">${text}</button>`).join('')}</div>`;
+const Stepper = (act, setAct, key, qty, named) => `<div class="stepper"><button type="button" data-act="${act}" data-k="${key}" data-d="-1" aria-label="한 박스 빼기">−</button><label><input value="${qty}" data-change="${setAct}" data-k="${key}" inputmode="numeric" aria-label="박스 수" ${named ? 'name="qty"' : ''}><span class="unit">박스</span></label><button type="button" class="plus" data-act="${act}" data-k="${key}" data-d="1" aria-label="한 박스 더하기">+</button></div>`;
+const EmptyState = (title, desc, btn) => `<div class="empty"><b>${title}</b>${desc ? `<p>${desc}</p>` : ''}${btn || ''}</div>`;
+const PageHead = (title, desc, eyebrow, right) => `<div class="pagehead">${eyebrow ? `<span class="label">${eyebrow}</span>` : ''}<div class="row1"><h1>${title}</h1>${right || ''}</div>${desc ? `<p>${desc}</p>` : ''}</div>`;
+function Denied(err) {
+  return `<div class="denied" role="alert"><b>${err.code === 'FORBIDDEN' ? '열 수 없는 화면입니다' : '처리할 수 없습니다'}</b><p>${esc(err.message)}</p>
+  <p class="t13 sub">이 판단은 화면이 아니라 데이터 계층에서 내립니다. 주소를 바꾸거나 직접 호출해도 같은 결과가 나옵니다.</p></div>`;
+}
+const specOf = (name) => { const m = /(\d+)\s*(Ø|파이)/.exec(name); return m ? `Ø${m[1]}` : ''; };
+function Thumb(p, act) {
+  const inner = (p.image ? `<img src="${p.image}" alt="${esc(p.name)}" loading="lazy">` : productArt(p.img)) + (specOf(p.name) ? `<span class="spec">${specOf(p.name)}</span>` : '');
+  return act ? `<button class="pthumb" data-act="${act}" data-p="${p.id}" aria-label="${esc(p.name)} 보기">${inner}</button>` : `<div class="pthumb">${inner}</div>`;
+}
+function productArt(img) {
+  const bowl = (fill, rim, lid, small) => {
+    const w = small ? 120 : 150, x = 100 - w / 2, y = small ? 98 : 92;
+    return `<svg viewBox="0 0 200 200" aria-hidden="true">
+      <ellipse cx="100" cy="${y + 66}" rx="${w / 2 - 8}" ry="8" fill="var(--art-shadow)"/>
+      <path d="M${x} ${y} L${x + 14} ${y + 60} Q100 ${y + 72} ${x + w - 14} ${y + 60} L${x + w} ${y} Z" fill="var(${fill})" stroke="var(${rim})" stroke-width="2"/>
+      <ellipse cx="100" cy="${y}" rx="${w / 2}" ry="14" fill="var(${fill})" stroke="var(${rim})" stroke-width="2"/>
+      ${lid ? `<path d="M${x - 4} ${y - 4} Q100 ${y - 46} ${x + w + 4} ${y - 4} Z" fill="var(--art-lid)" fill-opacity="0.85" stroke="var(--art-lid-rim)" stroke-width="2"/><ellipse cx="100" cy="${y - 4}" rx="${w / 2 + 4}" ry="12" fill="var(--art-lid)" fill-opacity="0.6" stroke="var(--art-lid-rim)" stroke-width="2"/>` : ''}
+    </svg>`;
+  };
+  switch (img) {
+    case 'bowl-l-dark': return bowl('--art-dark', '--art-rim', true, false);
+    case 'bowl-s-dark': return bowl('--art-dark', '--art-rim', true, true);
+    case 'bowl-s-white': return bowl('--art-white', '--art-white-rim', true, true);
+    case 'body-dark': return bowl('--art-dark', '--art-rim', false, false);
+    case 'body-white': return bowl('--art-white', '--art-white-rim', false, true);
+    case 'lid': return `<svg viewBox="0 0 200 200" aria-hidden="true"><ellipse cx="100" cy="150" rx="70" ry="8" fill="var(--art-shadow)"/>
+      <path d="M22 128 Q100 60 178 128 Z" fill="var(--art-lid)" stroke="var(--art-lid-rim)" stroke-width="2"/><ellipse cx="100" cy="128" rx="80" ry="16" fill="var(--art-lid)" stroke="var(--art-lid-rim)" stroke-width="2"/></svg>`;
+    case 'cutlery': return `<svg viewBox="0 0 200 200" aria-hidden="true"><rect x="58" y="34" width="84" height="132" fill="var(--art-white)" stroke="var(--art-white-rim)" stroke-width="2"/>
+      <rect x="84" y="48" width="9" height="100" rx="4" fill="var(--art-dark)"/><ellipse cx="88.5" cy="58" rx="9" ry="13" fill="var(--art-dark)"/>
+      <rect x="106" y="48" width="9" height="100" rx="4" fill="var(--art-dark)"/><rect x="104" y="44" width="2.5" height="26" fill="var(--art-dark)"/><rect x="109.5" y="44" width="2.5" height="26" fill="var(--art-dark)"/><rect x="115" y="44" width="2.5" height="26" fill="var(--art-dark)"/></svg>`;
+    case 'bag': return `<svg viewBox="0 0 200 200" aria-hidden="true"><path d="M50 60 L150 60 L160 170 L40 170 Z" fill="var(--art-white)" stroke="var(--art-white-rim)" stroke-width="2"/>
+      <path d="M78 60 Q78 30 100 30 Q122 30 122 60" fill="none" stroke="var(--art-white-rim)" stroke-width="5"/></svg>`;
+    default: return `<svg viewBox="0 0 200 200" aria-hidden="true"><path d="M40 70 L100 45 L160 70 L160 150 L100 175 L40 150 Z" fill="var(--art-kraft)" stroke="var(--art-kraft-rim)" stroke-width="2"/><path d="M40 70 L100 95 L160 70 M100 95 L100 175" fill="none" stroke="var(--art-kraft-rim)" stroke-width="2"/></svg>`;
+  }
+}
+const ICON = {
+  shop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.5" y="3.5" width="7" height="7"/><rect x="13.5" y="3.5" width="7" height="7"/><rect x="3.5" y="13.5" width="7" height="7"/><rect x="13.5" y="13.5" width="7" height="7"/></svg>',
+  cart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h2l2.4 11.2a1 1 0 0 0 1 .8h9.2a1 1 0 0 0 1-.8L20 8H6.2"/><circle cx="9" cy="20" r="1.3"/><circle cx="17" cy="20" r="1.3"/></svg>',
+  myorders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/></svg>',
+  mynotices: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 10v4a1 1 0 0 0 1 1h2l5 4V5L7 9H5a1 1 0 0 0-1 1z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
+  menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16" aria-hidden="true"><rect x="8" y="8" width="12" height="12"/><path d="M16 8V4H4v12h4"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.3-4.9M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9M20 20v-4h-4"/></svg>',
+  sliders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
+  chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 20h16M7 16v-4M12 16V7M17 16v-6"/></svg>',
+  key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="12" r="3.5"/><path d="M11.5 12H21M17 12v3M20 12v2"/></svg>',
+  coin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M9 9.5l1.5 5 1.5-4 1.5 4 1.5-5M8.5 12h7"/></svg>',
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/></svg>',
+  truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 6h11v10H3zM14 9h4l3 3v4h-7"/><circle cx="7" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+};
+
+/* ---------- 헤더·공지 바·메뉴·푸터 ---------- */
+function brandTag(me) {
+  if ((me.role === 'owner' && me.store_id) || me.role === 'admin') return `${me.brand_name} 가맹점 전용`;
+  if (me.role === 'developer' || me.role === 'operator') return '운영 화면';
+  return '가맹점 전용 주문몰';
+}
+function NoticeBar(me) {
+  if (me.role !== 'owner' || !me.store_id) return '';
+  const ns = guard(() => api().listNotices()); if (!Array.isArray(ns) || !ns.length) return '';
+  const n = ns[0]; if (state.dismissed === n.id) return '';
+  return `<div class="noticebar" role="region" aria-label="공지"><button class="go" data-act="opennotice" data-n="${n.id}">공지 · ${esc(n.title)}</button><button class="x" data-act="dismissnotice" data-n="${n.id}" aria-label="공지 바 닫기">×</button></div>`;
+}
+function Header(me, page) {
+  const isOwner = me.role === 'owner' && me.store_id;
+  const staffish = ['developer', 'operator', 'admin'].includes(me.role);
+  const cc = cartCount();
+  const acct = me.user ? `<div class="acct"><button class="iconbtn" data-act="acct" aria-label="계정 메뉴" aria-expanded="${state.acctOpen}">${ICON.user}</button>
+    ${state.acctOpen ? `<div class="acct-pop"><div class="who"><span class="label">${ROLE[me.role]}</span><b>${esc(me.user.name)}</b>${me.brand_name ? `<span class="t13 sub">${esc(me.brand_name)}</span>` : ''}</div>
+      ${LIVE ? `<span class="t13 sub">${esc(me.user.email || '')}</span><button class="btn secondary block" data-act="reload">새로 불러오기</button><button class="btn secondary block" data-act="pwchange">비밀번호 변경</button>` : `<div class="field"><label class="label" for="acct-switch">시험 계정 전환 (시제품 전용)</label>${Select('acct-switch', 'switch', db.users.map((u) => [u.id, `${ROLE[u.role]} · ${u.name}`]), state.uid, '시험 계정 전환')}</div>`}
+      <button class="btn secondary block" data-act="logout">로그아웃</button></div>` : ''}</div>` : '';
+  return `<header class="header ${staffish ? 'staff' : ''}" id="hdr"><div class="header-in ${staffish ? 'w-staff' : 'w-owner'}">
+    ${staffish ? `<button class="iconbtn menu-burger" data-act="navopen" aria-label="메뉴 열기">${ICON.menu}</button>` : ''}
+    <button class="logo" data-act="home" aria-label="모아상점 처음 화면"><span class="wordmark">moa<i>.</i></span><span class="tag">${esc(me.user ? brandTag(me) : '가맹점 전용 주문몰')}</span></button>
+    ${isOwner ? `<nav class="hnav" aria-label="주문몰 메뉴">${['shop', 'myorders', 'mytax', 'mynotices'].map((p) => `<button data-act="nav" data-p="${p}" ${(OWNER_TAB[page] || page) === p || page === p ? 'aria-current="page"' : ''}>${PAGE_LABEL[p]}</button>`).join('')}</nav>` : ''}
+    <div class="hright">${isOwner ? `<button class="iconbtn" data-act="nav" data-p="cart" aria-label="장바구니 ${cc}박스">${ICON.cart}${cc ? `<span class="cnt">${cc}</span>` : ''}</button>` : ''}${acct}</div>
+  </div>${me.user ? `<div class="hbrand-mobile">${esc(brandTag(me))}</div>` : ''}</header>
+  ${state.virtual ? '<div class="vbar">가상 테스트 데이터를 보는 중입니다. 실제 실적이 아닙니다.</div>' : ''}`;
+}
+function SideNav(me, page) {
+  if (me.role === 'admin') return `<nav class="sidenav" aria-label="메뉴"><div class="grp">${NAV.admin.map((p) => `<button data-act="nav" data-p="${p}" ${page === p ? 'aria-current="page"' : ''}><span>${PAGE_LABEL[p]}</span></button>`).join('')}</div></nav>`;
+  const pending = guard(() => api().listMemberships('pending').length);
+  return `<nav class="sidenav" aria-label="운영 메뉴">${NAV_GROUPS.map(([g, ps]) => { const vis = ps.filter((p) => NAV[me.role].includes(p));
+    return vis.length ? `<div class="grp"><span class="label">${g}</span>${vis.map((p) => `<button data-act="nav" data-p="${p}" ${page === p ? 'aria-current="page"' : ''}><span>${PAGE_LABEL[p]}</span>${p === 'approvals' && pending > 0 ? `<span class="cnt">${pending}</span>` : ''}</button>`).join('')}</div>` : ''; }).join('')}</nav>`;
+}
+// 화면 버전 (W-14): 문제를 알려 줄 때 이 글자를 같이 보내 달라고 안내한다
+const APP_VERSION = (typeof window !== 'undefined' && window.MOA_VERSION) || '';
+function Footer(owner) {
+  const f = api().publicInfo().footer;
+  const parts = [f.ceo && `대표 ${f.ceo}`, f.biz_no && `사업자등록번호 ${f.biz_no}`, f.address].filter(Boolean);
+  return `<footer class="footer"><div class="footer-in ${owner ? 'w-owner' : ''}"><span class="co">${esc(f.company || '모아상점')}</span>
+    ${parts.length ? `<span>${parts.map(esc).join(' · ')}</span>` : ''}<span>문의 ${esc(f.contact || '운영자에게 문의해 주세요')}</span>
+    <div class="links">${f.shipping_info ? '<button data-act="legal" data-v="shipping">배송 안내</button>' : ''}${f.return_info ? '<button data-act="legal" data-v="returns">교환·반품 안내</button>' : ''}<button data-act="legal" data-v="terms">이용약관</button><button data-act="legal" data-v="privacy">개인정보처리방침</button></div>${APP_VERSION ? `<span class="ver">${esc(APP_VERSION)}</span>` : ''}</div></footer>`;
+}
+const OWNER_TAB = { checkout: 'cart', order: 'myorders', mytax: 'myorders' };
+function TabBar(page) {
+  const cc = cartCount(); const cur = OWNER_TAB[page] || page;
+  return `<nav class="tabbar" aria-label="점주 메뉴"><div class="tabbar-in">${['shop', 'cart', 'myorders', 'mynotices'].map((p) => `<button data-act="nav" data-p="${p}" ${cur === p ? 'aria-current="page"' : ''}>${ICON[p]}${PAGE_LABEL[p]}${p === 'cart' && cc ? `<span class="cnt">${cc}</span>` : ''}</button>`).join('')}</div></nav>`;
+}
+
+/* ---------- 로그인·가입 ---------- */
+function renderLogin() {
+  const me = { user: null, role: 'guest' };
+  const owners = db.users.filter((u) => u.role === 'owner' && u.id !== 'u_own');
+  const row = (u, ds) => `<button data-act="login" data-uid="${u.id}"><span class="nm">${esc(u.name)}</span><span class="ds">${ds}</span>${Chip(ROLE[u.role])}</button>`;
+  const fixed = [['u_dev', '전체 운영 + 서버·보안 설정'], ['u_op', '전체 운영 (보안 설정 제외)'], ['u_admA', 'A 관리자 · 힙춘향마라탕만'], ['u_admB', 'B 관리자 · 고기육점만'], ['u_own', '힙춘향마라탕 구래점 · 승인됨']];
+  return `${Header(me, '')}<main class="auth">
+    <div class="title"><span class="wordmark">moa<i>.</i></span><h1>가맹점 전용 주문몰</h1><p class="sub">승인받은 가맹점은 자기 브랜드의 계약 단가로 용기·수저·봉투를 박스 단위로 주문합니다.</p></div>
+    <section class="stack s2"><h2 class="section-title">로그인</h2><div class="acctlist">${fixed.map(([id, ds]) => row(db.users.find((u) => u.id === id), ds)).join('')}
+      ${owners.map((u) => { const m = db.memberships.filter((x) => x.user_id === u.id).sort((a, b) => (a.applied_at < b.applied_at ? 1 : -1))[0]; return row(u, m ? `가입 신청 · ${MEMBER[m.status][0]}` : ''); }).join('')}</div>
+      <p class="hint">시제품이라 비밀번호 없이 들어갑니다. 실서비스에서는 아이디·비밀번호(또는 카카오 로그인)로 바뀝니다.</p></section>
+    <section class="stack"><div class="stack s2"><h2 class="section-title">가입 코드로 신청</h2>${db.settings.signup_open === false ? '<p class="note warn">지금은 가입 신청을 받지 않습니다. 본사에 문의해 주세요.</p>' : ''}<p class="hint">본사에서 카카오톡으로 받은 코드를 넣어 주세요. 신청 후 운영자가 소속을 확인하면 주문할 수 있습니다.</p></div>
+      <form data-form="apply" class="stack">
+        <div class="field"><label for="ap-code" class="label">가입 코드</label><input id="ap-code" name="code" class="codeinput" autocomplete="off" autocapitalize="characters" maxlength="6" placeholder="K7M2QX" required></div>
+        ${Field('ap-store', 'store_name', '상호(매장명)', 'placeholder="예: 힙춘향마라탕 송도점"')}
+        ${Field('ap-biz', 'biz_no', '사업자번호', 'inputmode="numeric" placeholder="000-00-00000"')}
+        ${Field('ap-ceo', 'ceo', '대표자명')}
+        ${Field('ap-phone', 'phone', '연락처', 'inputmode="tel" placeholder="010-0000-0000"')}
+        ${Field('ap-addr', 'address', '매장 주소')}
+        <button class="btn lg block" type="submit">가입 신청</button></form></section>
+  </main>${Footer(true)}`;
+}
+
+/* ---------- 매출 그래프 (관리자·운영자 공통, 런칭 필름 방식) ---------- */
+const BAR_SHADES = ['--bar-1', '--bar-2', '--bar-3'];
+// 오래된 달일수록 진하게, 기준 월은 주황
+const barColors = (n) => [...BAR_SHADES.slice(3 - Math.max(0, n - 1)), '--accent'].slice(-n);
+function barLabel(v) {
+  if (!v) return '주문 없음';
+  if (Math.abs(v) < 10000) return fmtExact(v);
+  return fmtWon(Math.round(v / 10000) * 10000).replace(/ ?원$/, '');
+}
+function BarChart(data, base, mini) {
+  const cols = barColors(data.length);
+  const max = Math.max(1, ...data.map((d) => d.amount));
+  const bars = data.map((d, k) => { const p = Math.max(0, d.amount) / max;
+    return `<div class="col" style="--k:${k}"><span class="val ${d.amount ? '' : 'zero'}">${barLabel(d.amount)}</span>${d.amount > 0 ? `<div class="bar" style="--h:calc((100% - 24px) * ${p.toFixed(4)});--c:var(${cols[k]})"></div>` : ''}</div>`; }).join('');
+  const labels = data.map((d) => `<span class="${d.month === base ? 'on' : ''}">${Number(d.month.slice(5))}월</span>`).join('');
+  return `<div class="bars ${mini ? 'mini' : ''}" role="img" aria-label="${data.map((d) => `${monthLabel(d.month)} ${fmtWon(d.amount)}`).join(', ')}">${bars}</div><div class="xlabels ${mini ? 'mini' : ''}">${labels}</div>`;
+}
+function StackChart(data) {
+  const cols = barColors(data.length);
+  const total = data.reduce((s, d) => s + Math.max(0, d.amount), 0);
+  if (!total) return `<div class="stackwrap"><div></div><div class="cap" style="justify-self:center;grid-column:1 / -1"><b>이 기간에는 주문이 없습니다</b></div></div>`;
+  const h = (d) => ((Math.max(0, d.amount) / total) * 100).toFixed(3);
+  return `<div class="stackwrap" role="img" aria-label="합쳐 보기 ${fmtWon(total)}"><div class="cap"><span class="t13 sub">합쳐 보기</span><b>한 번씩만 더해요</b></div>
+    <div class="stackcol">${data.map((d, k) => `<div class="seg-s" style="--h:${h(d)}%;--c:var(${cols[k]});--k:${k}"></div>`).join('')}</div>
+    <div class="legend">${data.map((d, k) => `<div class="li" style="--h:${h(d)}%;--c:var(${cols[k]});--k:${k}"><i></i>${Number(d.month.slice(5))}월 <b>${barLabel(d.amount)}</b></div>`).join('')}</div></div>`;
+}
+function SalesView(scopeFixed) {
+  const a = api(); const me = a.me(); const isStaff = ['developer', 'operator'].includes(me.role);
+  let scope = scopeFixed || state.scope;
+  if (state.page === 'sales' && state.param) scope = state.param;
+  state.salesScope = scope;
+  const rep = guard(() => a.salesReport(scope, state.base, state.n, state.virtual));
+  const brands = isStaff ? a.listBrands() : [];
+  const top = isStaff ? `<div class="toolbar">${Select('scope', 'scope', [['all', '전체 브랜드'], ...brands.map((b) => [b.id, b.name])], scope, '브랜드 선택', 'line')}</div>` : '';
+  if (rep.__error) return top + Denied(rep.__error);
+  const title = scope === 'all' ? '전체 브랜드' : (db.brands.find((b) => b.id === scope) || {}).name;
+  const key = [scope, state.base, state.n, state.view, state.virtual, rep.total].join('|');
+  const animate = key !== state.lastChartKey || state.replay; state.lastChartKey = key; state.replay = false;
+  const deltaTxt = (cur, prev, label) => {
+    if (!prev) return `<span class="t13 sub">${label}와 비교할 매출이 없습니다</span>`;
+    const d = cur - prev, pct = (d / Math.abs(prev)) * 100, cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
+    return `<span class="t13"><span class="delta ${cls}">${d > 0 ? '▲ 증가' : d < 0 ? '▼ 감소' : '변동 없음'} ${fmtWon(Math.abs(d))} (${Math.abs(pct).toFixed(1)}%)</span> <span class="sub">${label} 대비</span></span>`;
+  };
+  const md = rep.monthsData;
+  const nIdx = state.n - 1, vIdx = state.view === 'combined' ? 1 : 0;
+  charts.main = { segments: md, base: state.base, cumul: state.cumul, height: 200 };
+  return `${top}<section class="card salescard ${animate ? 'anim' : ''}">
+    <div class="cardhead"><div><h2>매출 그래프</h2><p class="t13 sub">${esc(title)} · ${state.virtual ? '예시 수치' : '실제 수치'}</p></div>
+      <div class="ctlrow"><button class="iconbtn" data-act="replay" aria-label="그래프 다시 그리기">${ICON.refresh}</button><button class="btn outline sm" data-act="salesopts">${ICON.sliders}조회 설정</button></div></div>
+    <div class="summary"><span class="label">선택 기간 매출</span><span class="kpi-v" data-roll="${rep.total}" data-rollkey="sales-${scope}">${fmtWon(rep.total)}</span>
+      <p class="rangeline"><span>기준 월</span><span class="monthnav"><button data-act="month" data-d="-1" aria-label="이전 달">‹</button><b>${monthLabel(state.base)}</b><button data-act="month" data-d="1" aria-label="다음 달">›</button></span><span>·</span><span>조회 <b>${rangeSentence(rep.start, rep.end)}</b></span>${state.virtual ? Chip('예시', 'st-virtual') : ''}</p>
+      ${deltaTxt(rep.total, rep.prevTotal, `직전 ${rep.months.length}개월`)}</div>
+    <div class="seg wide" role="group" aria-label="기간" style="--n:4;--i:${nIdx}">${[1, 2, 3, 4].map((n) => `<button data-act="period" data-v="${n}" aria-pressed="${state.n === n}">${n}개월</button>`).join('')}</div>
+    <div class="row between"><div class="seg" role="group" aria-label="보기 방식" style="--n:2;--i:${vIdx}"><button data-act="view" data-v="separate" aria-pressed="${!vIdx}">따로 보기</button><button data-act="view" data-v="combined" aria-pressed="${!!vIdx}">합쳐 보기</button></div>
+      <span class="t13 sub">집계 시점 ${BASIS_LABEL[rep.basis]} · 한국 시간</span></div>
+    ${state.view === 'combined' ? StackChart(md) : BarChart(md, state.base, false)}
+  </section>
+  <div class="tablewrap"><table class="tbl"><thead><tr><th>월</th><th class="r">매출</th><th class="r">전월 대비</th></tr></thead><tbody>
+    ${md.map((m) => `<tr><td class="nw">${monthLabel(m.month)} ${m.closed ? Chip('마감', 'st-done') : ''}${m.amount === 0 ? ` <span class="t13 sub">주문 없음</span>` : ''}</td><td class="r">${fmtWon(m.amount)}</td>
+      <td class="r t13">${m.prev ? `<span class="delta ${m.amount > m.prev ? 'up' : m.amount < m.prev ? 'down' : 'flat'}">${m.amount >= m.prev ? '+' : ''}${(((m.amount - m.prev) / Math.abs(m.prev)) * 100).toFixed(1)}%</span>` : '<span class="sub">-</span>'}</td></tr>`).join('')}
+    </tbody><tfoot><tr><td>기간 총매출 (${rep.months.length}개월)</td><td class="r">${fmtWon(rep.total)}</td><td></td></tr></tfoot></table></div>
+  <section class="card"><div class="row between"><h2>일별 추이</h2>${Seg('그래프 값', [['cumul', 0, '일별', !state.cumul], ['cumul', 1, '누적', state.cumul]]).replace('class="seg"', `class="seg" style="--n:2;--i:${state.cumul ? 1 : 0}"`)}</div><div class="chart" data-chart="main"></div></section>`;
+}
+function salesOptsSheet() {
+  const a = api(); const me = a.me(); const isStaff = ['developer', 'operator'].includes(me.role);
+  const scope = state.salesScope || 'all';
+  return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="조회 설정"><div class="sheethead"><h2>조회 설정</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    ${isStaff ? `<div class="field"><label class="label" for="so-scope">브랜드</label>${Select('so-scope', 'scope', [['all', '전체 브랜드'], ...a.listBrands().map((b) => [b.id, b.name])], scope, '브랜드')}</div>` : ''}
+    <div class="field"><label class="label" for="so-base">기준 월</label><input type="month" id="so-base" class="input" value="${state.base}" data-change="basemonth"></div>
+    <div class="stack s2"><span class="label">데이터</span><div class="seg wide" role="group" aria-label="데이터" style="--n:2;--i:${state.virtual ? 1 : 0}"><button data-act="virtual" data-v="0" aria-pressed="${!state.virtual}">실제 수치</button><button data-act="virtual" data-v="1" aria-pressed="${state.virtual}">예시 수치</button></div>
+      <p class="hint">예시 수치는 6월 3,000만 · 7월 4,000만 · 8월 3,500만 · 9월 5,000만 원의 가상 데이터입니다. 실제 실적과 섞이지 않습니다.</p></div>
+    <button class="btn lg block" data-act="close">적용</button></div>`;
+}
+function rollNumbers() {
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.querySelectorAll('[data-roll]').forEach((el) => {
+    const key = el.dataset.rollkey, to = Number(el.dataset.roll);
+    const from = state.rollPrev[key] ?? 0; state.rollPrev[key] = to;
+    if (reduce || from === to) return;
+    const t0 = performance.now(), dur = 700;
+    const step = (t) => {
+      if (!el.isConnected) return;
+      const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3);
+      const v = from + (to - from) * e;
+      el.textContent = p < 1 ? fmtWon(Math.abs(to) >= 100000 ? Math.round(v / 10000) * 10000 : Math.round(v)) : fmtWon(to);
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+function niceStep(raw) { const p = Math.pow(10, Math.floor(Math.log10(raw || 1))); const f = raw / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p; }
+function drawCharts() {
+  document.querySelectorAll('[data-chart]').forEach((el) => {
+    const cfg = charts[el.dataset.chart]; if (!cfg) return;
+    const W = Math.max(240, el.clientWidth || 600), H = cfg.height, padL = 48, padR = 12, padT = cfg.mini ? 12 : 32, padB = 28;
+    const pts = []; let acc = 0;
+    cfg.segments.forEach((s, si) => s.daily.forEach((v, d) => { acc += v; pts.push({ m: s.month, si, day: d + 1, v: cfg.cumul ? acc : v, raw: v }); }));
+    const vals = pts.map((p) => p.v); const max = Math.max(1, ...vals), min = Math.min(0, ...vals);
+    const step = niceStep((max - min) / 4); const top = Math.ceil(max / step) * step, bot = Math.floor(min / step) * step;
+    const x = (i) => padL + (pts.length <= 1 ? 0 : (i / (pts.length - 1)) * (W - padL - padR));
+    const y = (v) => padT + (1 - (v - bot) / (top - bot || 1)) * (H - padT - padB);
+    const y0 = y(Math.max(bot, 0));
+    let svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="일별 매출 그래프">`;
+    for (let t = bot; t <= top + 1e-6; t += step) svg += `<line x1="${padL}" x2="${W - padR}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line)" stroke-width="1"/><text class="ax" x="${padL - 8}" y="${y(t) + 4}" text-anchor="end">${fmtShort(t)}</text>`;
+    let idx = 0;
+    const half = pts.length > 1 ? (x(1) - x(0)) / 2 : 0;
+    cfg.segments.forEach((s, si) => {
+      const n = s.daily.length, i0 = idx, i1 = idx + n - 1, isBase = s.month === cfg.base || cfg.segments.length === 1;
+      if (si > 0) svg += `<line x1="${x(i0) - half}" x2="${x(i0) - half}" y1="${padT - 20}" y2="${H - padB}" stroke="var(--line)"/>`;
+      const from = si > 0 ? i0 - 1 : i0;   // 앞 달 마지막 날과 이어 그린다
+      const seg = pts.slice(from, i1 + 1).map((p, k) => `${k ? 'L' : 'M'}${x(from + k).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ');
+      svg += `<path d="${seg} L${x(i1)} ${y0} L${x(from)} ${y0} Z" fill="var(--chart-fill)"/>`;
+      svg += `<path d="${seg}" fill="none" stroke="var(${isBase ? '--accent' : '--chart-muted'})" stroke-width="${isBase ? 2 : 1.5}" stroke-linejoin="round"/>`;
+      const roomy = x(i1) - x(i0) > 110;
+      if (!cfg.mini) svg += `<text class="ml ${isBase ? '' : 'mute'}" x="${(x(i0) + x(i1)) / 2}" y="${padT - 14}" text-anchor="middle">${Number(s.month.slice(5))}월${roomy ? ' ' + (s.amount === 0 ? '주문 없음' : fmtShort(s.amount)) : ''}</text>`;
+      svg += `<text class="ax" x="${x(i0)}" y="${H - 8}" text-anchor="start">${Number(s.month.slice(5))}/1</text>`;
+      if (cfg.segments.length === 1) svg += `<text class="ax" x="${x(i1)}" y="${H - 8}" text-anchor="end">${Number(s.month.slice(5))}/${n}</text>`;
+      if (cfg.mini && s.amount === 0) svg += `<text class="ml mute" x="${(x(i0) + x(i1)) / 2}" y="${(padT + H - padB) / 2}" text-anchor="middle">주문 없음</text>`;
+      idx += n;
+    });
+    const li = pts.length - 1;
+    svg += `<circle cx="${x(li)}" cy="${y(pts[li].v)}" r="4" fill="var(--text)" stroke="var(--bg)" stroke-width="2"/>`;
+    svg += `<line class="cross" x1="0" x2="0" y1="${padT}" y2="${H - padB}" stroke="var(--text-sub)" stroke-dasharray="3 3" visibility="hidden"/><circle class="dot" r="4.5" fill="var(--bg)" stroke="var(--text)" stroke-width="2" visibility="hidden"/>
+      <rect class="hit" x="${padL}" y="0" width="${W - padL - padR}" height="${H}" fill="transparent"/></svg><div class="tip" hidden></div>`;
+    el.innerHTML = svg;
+    const hit = el.querySelector('.hit'), cross = el.querySelector('.cross'), dot = el.querySelector('.dot'), tip = el.querySelector('.tip');
+    const move = (ev) => {
+      const rect = el.getBoundingClientRect(); const scale = W / (rect.width || W); const px = (ev.clientX - rect.left) * scale;
+      const i = Math.max(0, Math.min(pts.length - 1, Math.round(((px - padL) / (W - padL - padR)) * (pts.length - 1))));
+      const p = pts[i];
+      cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+      dot.setAttribute('cx', x(i)); dot.setAttribute('cy', y(p.v)); dot.setAttribute('visibility', 'visible');
+      tip.hidden = false; tip.style.left = Math.max(70, Math.min(W - 70, x(i))) / scale + 'px'; tip.style.top = y(p.v) / scale + 'px';
+      tip.textContent = `${Number(p.m.slice(5))}월 ${p.day}일 · ${cfg.cumul ? '누적 ' + fmtWon(p.v) : fmtWon(p.raw)}`;
+    };
+    hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); tip.hidden = true; });
+  });
+}
+let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(drawCharts, 150); });
+window.addEventListener('scroll', () => { const h = document.getElementById('hdr'); if (h) h.classList.toggle('scrolled', window.scrollY > 4); }, { passive: true });
+
+/* ---------- 초대코드 카드 ---------- */
+function InviteCard(bid, compact) {
+  const inv = guard(() => api().getInvite(bid));
+  if (inv && inv.__error) return Denied(inv.__error);
+  if (!inv) return `<div class="invite ${compact ? 'compact' : ''}"><p class="sub">발급된 코드가 없습니다.</p><button class="btn" data-act="reissue" data-b="${bid}">코드 발급</button></div>`;
+  const left = new Date(inv.expires_at).getTime() - Date.now();
+  const leftTxt = inv.expired ? '만료됨' : `${Math.floor(left / 3600000)}시간 ${Math.floor((left % 3600000) / 60000)}분 남음`;
+  const fb = state.copyFallback && state.copyFallback.bid === bid;
+  const site = api().publicInfo().site_url;
+  return `<section class="invite ${compact ? 'compact' : ''}">
+    <div class="row between"><div class="meta"><span class="label">${compact ? '' : '초대코드 공유 · '}${esc(inv.brand_name)} 가입 코드</span><span class="code ${inv.expired ? 'expired' : ''}">${esc(inv.code)}</span></div>
+      <div class="stack s2">${Chip(leftTxt, inv.expired ? 'st-err' : 'st-wait')}<span class="t13 sub">${fmtDate(inv.expires_at)}까지 · 발급 후 24시간</span></div></div>
+    ${compact ? '' : `<p class="t13"><span class="sub">접속 주소</span> <b>${esc(site || '(사이트 주소 미등록)')}</b></p>`}
+    ${inv.expired ? `<p class="note warn">코드가 만료되었습니다. 새 코드를 발급한 뒤 공유해 주세요.</p>` : ''}
+    <div class="row"><button class="btn pill ${compact ? '' : 'lg'}" data-act="share" data-b="${bid}" ${inv.expired ? 'disabled' : ''}>${ICON.copy}주소·코드 복사</button><button class="btn secondary ${compact ? '' : 'lg'}" data-act="reissue" data-b="${bid}">새 코드 발급</button></div>
+    ${fb ? `<div class="stack s2"><p class="note warn">이 브라우저에서는 자동 복사가 막혔습니다. 아래 안내문이 선택되어 있으니 길게 눌러 복사해 주세요.</p><textarea class="preview" id="fallback-${bid}" readonly aria-label="복사할 안내문">${esc(inv.share_text)}</textarea></div>`
+      : compact ? '' : `<div class="stack s2"><span class="label">카카오톡에 붙여넣을 안내문</span><pre class="preview">${esc(inv.share_text)}</pre></div>`}
+  </section>`;
+}
+
+/* ---------- 레이아웃 ---------- */
+function shellLayout(me, page, main) {
+  return `${Header(me, page)}<div class="shell">${SideNav(me, page)}<main class="page">${main}</main></div>${Footer(false)}
+    ${state.navOpen ? `<div class="drawer-scrim" data-act="navclose"></div><div class="drawer" role="dialog" aria-modal="true" aria-label="메뉴"><div class="row between"><span class="wordmark">moa<i>.</i></span><button class="iconbtn" data-act="navclose" aria-label="메뉴 닫기">×</button></div>${SideNav(me, page)}</div>` : ''}`;
+}
+
+/* ---------- 홈 (벤토) ---------- */
+const Tile = (page, icon, ttl, body, cls = '') => `<button class="tile ${cls}" data-act="nav" data-p="${page}"><span class="ic">${ICON[icon] || ''}</span><div class="body">${body}</div><span class="ttl">${ttl}</span></button>`;
+function staffHome(a) {
+  const me = a.me();
+  const brands = a.listBrands();
+  const rep = a.salesReport('all', nowMonth(), 4, false);
+  const mem = a.listMemberships(); const pending = mem.filter((m) => m.status === 'pending').length;
+  const settle = a.settlement(state.settleMonth, false); const pb = settle.reduce((s, r) => s + r.payback + r.payback_vat, 0);
+  const boxRows = a.boxesReport(state.boxesMonth, false); const boxes = boxRows.reduce((s, r) => s + Object.values(r.boxes).reduce((x, v) => x + v, 0), 0);
+  const kinds = new Set(); boxRows.forEach((r) => Object.entries(r.boxes).forEach(([k, v]) => v && kinds.add(k)));
+  const notice = a.listNotices()[0];
+  const shipped = a.listOrders().find((o) => o.shipment);
+  const prods = a.listProducts(); const optCount = prods.reduce((s, p) => s + p.options.length, 0);
+  const optSample = prods.flatMap((p) => p.options.map((o) => o.name)).slice(0, 4);
+  const ords = a.listOrders(); const taxReq = a.listTaxInvoices().filter((t) => t.status === 'requested').length; const pub = a.publicInfo();
+  const sc = [['orders', 'pending_payment', '결제·입금 확인', ords.filter((o) => o.status === 'pending_payment').length], ['orders', 'paid', '배송 준비', ords.filter((o) => o.status === 'paid').length],
+    ['orders', 'preparing', '송장 입력', ords.filter((o) => o.status === 'preparing').length], ['approvals', '', '가입 승인', pending], ['taxinvoices', 'requested', '세금계산서 발행', taxReq]];
+  return PageHead('홈', '', `${ROLE[me.role]} · 전체 운영`) +
+    (pub.order_open && pub.signup_open ? '' : `<p class="note warn">${pub.order_open ? '' : '지금 주문 접수가 꺼져 있습니다. '}${pub.signup_open ? '' : '지금 가입 신청 접수가 꺼져 있습니다. '}<button class="textbtn" data-act="nav" data-p="settings">운영 설정에서 켜기</button></p>`) +
+    `<div class="shortcuts" role="group" aria-label="처리할 일">${sc.map(([p, v, l, n]) => `<button class="sc ${n ? 'on' : ''}" data-act="goto" data-p="${p}" data-v="${v}"><b class="num">${n}</b><span>${l}</span></button>`).join('')}</div>` + `<div class="bento">
+    ${Tile('sales', 'chart', '매출 그래프', `<span class="label">최근 4개월 · 전체 브랜드</span><span class="big" data-roll="${rep.total}" data-rollkey="home-sales">${fmtWon(rep.total)}</span><div class="anim">${BarChart(rep.monthsData, nowMonth(), true)}</div>`, 'span2')}
+    ${Tile('approvals', 'user', '가입 승인', `${pending ? `<span class="big">${pending}<small>건 대기</small></span>` : ''}<div class="mini-list">${mem.slice(0, 3).map((m) => `<div><span>${esc(m.info.store_name || m.store_name || '-')}</span>${StatusChip(MEMBER, m.status)}</div>`).join('') || '<span class="sub">신청 없음</span>'}</div>`)}
+    ${Tile('brands', 'key', '초대코드 공유', `<div class="mini-list">${brands.slice(0, 4).map((b) => `<div><span>${esc(b.name)}</span><b class="num">${b.code ? esc(b.code.code) : '-'}</b></div>`).join('')}</div>`)}
+    ${Tile('payback', 'coin', '페이백 정산', `<span class="big">${fmtExact(pb)}</span><span class="t13 sub">${monthLabel(state.settleMonth)} · 부가세 포함</span>`)}
+    ${Tile('boxes', 'box', '박스 단위 주문', `<span class="big">${boxes.toLocaleString('ko-KR')}<small>박스</small></span><span class="t13 sub">${monthLabel(state.boxesMonth)} · 품목 ${kinds.size}종</span>`)}
+    ${Tile('notices', 'mynotices', '공지사항', notice ? `<b class="t16">${esc(notice.title)}</b><span class="t13 sub">${fmtDateOnly(notice.created_at)}</span>` : '<span class="sub">올린 공지가 없습니다</span>')}
+    ${Tile('orders', 'truck', '송장번호', shipped ? `<span class="big num" style="font-size:var(--t24)">${esc(shipped.shipment.tracking_no)}</span><span class="t13 sub">${esc(shipped.shipment.carrier)} · ${statusName(shipped)}</span>` : '<span class="sub">입력한 송장이 없습니다</span>')}
+    ${Tile('products', 'myorders', '상품 옵션', `<span class="big">${prods.length}<small>개 상품</small></span>${optSample.length ? `<div class="row">${optSample.map((o) => Chip(o)).join('')}</div>` : `<span class="t13 sub">옵션 ${optCount}개</span>`}`)}
+  </div>`;
+}
+
+/* ---------- 관리자 ---------- */
+function renderAdmin(page) {
+  const a = api(); const me = a.me();
+  let main;
+  if (page === 'sales') main = PageHead('매출', '우리 브랜드 가맹점 주문 매출만 보입니다.', esc(me.brand_name)) + SalesView(me.brand_id);
+  else {
+    const rep = guard(() => a.salesReport(me.brand_id, nowMonth(), 4, false));
+    main = PageHead('가맹점 초대', '버튼 한 번으로 주소·코드·안내문이 함께 복사됩니다. 카카오톡 단톡방이나 1:1 대화에 붙여넣으세요. 가입 승인은 모아상점 운영자가 합니다.', `${esc(me.brand_name)} 본사`) +
+      InviteCard(me.brand_id) +
+      (rep.__error ? '' : `<div class="bento">${Tile('sales', 'chart', '매출 그래프', `<span class="label">최근 4개월</span><span class="big" data-roll="${rep.total}" data-rollkey="admin-sales">${fmtWon(rep.total)}</span><div class="anim">${BarChart(rep.monthsData, nowMonth(), true)}</div>`, 'span2')}
+        ${Tile('sales', 'coin', '이번 달 매출', `<span class="big">${fmtWon(rep.monthsData[rep.monthsData.length - 1].amount)}</span><span class="t13 sub">${monthLabel(nowMonth())} · 결제 완료 기준</span>`)}</div>`);
+    const pays = guard(() => a.listPayouts(me.brand_id)); const acc = guard(() => a.getBrandAccount(me.brand_id));
+    if (Array.isArray(pays)) main += `<section class="card"><div class="row between"><h2>페이백 지급 내역</h2><span class="t13 sub">${acc && !acc.__error ? `받는 계좌 ${esc(acc.bank)} ${esc(acc.account_no)} (${esc(acc.holder)})` : '받을 계좌를 운영자에게 알려 주세요'}</span></div>
+      ${pays.length ? PayoutTable(pays, false) : '<p class="t13 sub">아직 이체 기록이 없습니다. 운영자가 달마다 마감한 뒤 이체하고 여기에 기록합니다.</p>'}</section>`;
+  }
+  return shellLayout(me, page, main);
+}
+
+/* ---------- 점주 ---------- */
+function renderOwner(page) {
+  const a = api(); const me = a.me();
+  if (!me.membership || me.membership.status !== 'approved') {
+    const m = me.membership; const rejected = m && m.status === 'rejected';
+    if (!m) return `${Header(me, '')}<main class="auth"><div class="title"><h1>가입 코드 입력</h1><p class="sub">본사에서 받은 가입 코드와 매장 정보를 넣어 주세요. 운영자가 소속을 확인하면 주문할 수 있습니다.</p></div>
+      <section><form data-form="${LIVE ? 'applycode' : 'apply'}" class="stack">${CodeFields('ac')}<button class="btn lg block" type="submit">가입 신청</button></form></section></main>${Footer(true)}`;
+    return `${Header(me, '')}<main class="auth center"><div class="stack center-items">${StatusChip(MEMBER, rejected ? 'rejected' : 'pending')}
+      <h1>${rejected ? '가입이 반려되었습니다' : '승인을 기다리고 있습니다'}</h1>
+      <p class="sub">${rejected ? `사유: ${esc(m.reject_reason || '본사에 문의해 주세요.')}` : `${esc(me.brand_name || '')} 소속 가맹점이 맞는지 운영자가 확인하고 있습니다. 승인되면 우리 브랜드 상품과 계약 단가가 열립니다.`}</p></div>
+      ${m ? `<div class="card flat"><div class="sumline"><span class="sub">상호</span><span>${esc(m.info.store_name)}</span></div><div class="sumline"><span class="sub">사업자번호</span><span>${esc(m.info.biz_no || '-')}</span></div><div class="sumline"><span class="sub">신청일</span><span>${fmtDate(m.applied_at)}</span></div></div>` : ''}
+      </main>${Footer(true)}`;
+  }
+  const seenKey = 'approved-seen:' + me.membership.id;
+  if (!loadPref(seenKey)) { savePref(seenKey, '1'); state.notifyNext = { title: '가입 승인 완료', text: `오늘부터 ${me.brand_name} 계약가로 주문할 수 있어요.` }; }
+  let main = '', extra = '', padCls = 'has-tabbar';
+  if (page === 'cart' || page === 'checkout') { const c = page === 'cart' ? ownerCart(a, me) : ownerCheckout(a, me); main = c.html; extra = c.bar; if (c.bar) padCls += ' has-paybar'; }
+  else if (page === 'myorders') main = ownerOrders(a, me);
+  else if (page === 'order') main = ownerOrderPage(a, me);
+  else if (page === 'mytax') main = ownerTax(a, me);
+  else if (page === 'mynotices') {
+    const ns = a.listNotices(); const n = state.noticeId && ns.find((x) => x.id === state.noticeId);
+    main = n ? `<article class="article"><button class="textbtn backlink" data-act="noticeback">← 공지 목록</button><div class="stack s2"><span class="label">${n.target === 'all' ? '전체 공지' : n.target === 'brand' ? '브랜드 공지' : '우리 매장 공지'} · ${fmtDateOnly(n.created_at)}</span><h1>${esc(n.title)}</h1></div>
+        ${n.image ? `<img src="${n.image}" alt="${esc(n.title)} 첨부 이미지" loading="lazy">` : ''}<div class="body">${esc(n.body)}</div></article>`
+      : PageHead('공지', '', esc(me.brand_name)) + (ns.length ? `<div class="nlist">${ns.map((x) => `<button data-act="opennotice" data-n="${x.id}"><span class="tt">${esc(x.title)}</span><span class="t13 sub nw">${fmtDateOnly(x.created_at)}</span></button>`).join('')}</div>` : EmptyState('새 공지가 없습니다', ''));
+  } else {
+    main = ownerShop(a, me);
+    if (cartCount()) { const t = cartTotals(a, a.listProducts()); padCls += ' has-cartbar';
+      extra = `<div class="cartbar"><div><span class="t13 sub">총 ${t.boxes}박스 · 배송비 포함</span><div class="tot">${fmtExact(t.total)}</div></div><button class="btn" data-act="nav" data-p="cart">장바구니 보기 <span class="cbadge">${t.lines.length}</span></button></div>`; }
+  }
+  const closed = a.publicInfo().order_open ? '' : `<div class="closedbar" role="status">지금은 주문 접수를 잠시 멈췄습니다. 담아 둔 상품은 그대로 남아 있어요.</div>`;
+  return `${NoticeBar(me)}${Header(me, page)}${closed}<main class="page owner ${padCls}">${main}</main>${extra}${Footer(true)}${TabBar(page)}`;
+}
+function shopFiltered(prods) {
+  const q = (state.shopQ || '').trim().toLowerCase();
+  let shown = prods.filter((p) => (state.shopCat === 'all' || p.category_id === state.shopCat) && (!q || p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q) || p.options.some((o) => o.name.toLowerCase().includes(q))));
+  const sorters = { name: (x, y) => x.name.localeCompare(y.name, 'ko'), low: (x, y) => x.price.price - y.price.price, high: (x, y) => y.price.price - x.price.price };
+  if (sorters[state.shopSort]) shown = shown.slice().sort(sorters[state.shopSort]);
+  return shown;
+}
+const cartBoxesOf = (pid) => Object.values(state.cart).filter((l) => l.product_id === pid).reduce((s, l) => s + l.qty, 0);
+/** 상품 카드: 카드 안에서 옵션·수량을 고르고 바로 담는다 (사진·이름을 누르면 자세히) */
+function ProductCard(p, hint) {
+  const qty = state.cardQty[p.id] || 1;
+  const opt = state.cardOpt[p.id] || (p.options[0] ? p.options[0].id : '');
+  const inCart = cartBoxesOf(p.id);
+  return `<article class="pcard">${Thumb(p, 'openp')}
+    <div class="pinfo"><button class="pname" data-act="openp" data-p="${p.id}">${esc(p.name)}</button>
+      <span class="pmeta">${p.code ? esc(p.code) + ' · ' : ''}${packText(p.pack_qty)}</span>
+      <span class="pprice">${fmtExact(p.price.price)}<small>/ 박스</small></span>
+      ${inCart ? `<span class="incart">✓ 장바구니 ${inCart}박스</span>` : hint ? `<span class="phint">${esc(hint)}</span>` : ''}</div>
+    <div class="pctl">${p.options.length ? `<span class="selwrap popt"><select class="select" data-change="cardopt" data-k="${p.id}" aria-label="${esc(p.name)} 옵션">${opts(p.options.map((o) => [o.id, o.name]), opt)}</select></span>` : ''}
+      ${Stepper('cardqty', 'cardset', p.id, qty)}<button class="btn padd" data-act="cardadd" data-p="${p.id}" aria-label="${esc(p.name)} ${qty}박스 담기">${ICON.plus}담기</button></div>
+  </article>`;
+}
+function shopListHtml(prods) {
+  const shown = shopFiltered(prods);
+  const catName = (db.categories.find((c) => c.id === state.shopCat) || {}).name;
+  const chips = [state.shopCat !== 'all' ? `<button class="chip filter" data-act="cat" data-c="all" aria-label="${esc(catName)} 필터 지우기">${esc(catName)}<span class="x" aria-hidden="true">×</span></button>` : '',
+    state.shopQ ? `<button class="chip filter" data-act="clearq" aria-label="검색어 지우기">"${esc(state.shopQ)}"<span class="x" aria-hidden="true">×</span></button>` : ''].join('');
+  const head = `<div class="listhead"><h2>상품<span class="count">${shown.length}개</span></h2><div class="row"><span class="t13 sub">1박스 · 부가세 포함</span>${Select('shop-sort', 'sort', [['default', '기본순'], ['name', '이름순'], ['low', '낮은 가격순'], ['high', '높은 가격순']], state.shopSort, '정렬', 'line')}</div></div>
+    ${chips ? `<div class="applied"><span class="t13 sub">적용된 필터</span>${chips}</div>` : ''}`;
+  if (!shown.length) return head + EmptyState('검색 결과가 없습니다', '다른 상품명이나 분류를 선택해 주세요.', `<button class="btn secondary" data-act="resetshop">검색 초기화</button>`);
+  return head + `<div class="pgrid">${shown.map(ProductCard).join('')}</div>`;
+}
+/* ---------- 장바구니 계산 (화면 공통) ---------- */
+function cartTotals(a, prods) {
+  const lines = Object.entries(state.cart).map(([k, l]) => { const p = prods.find((x) => x.id === l.product_id); return p ? { k, l, p, opt: p.options.find((o) => o.id === l.option_id) } : null; }).filter(Boolean);
+  const goods = lines.reduce((s, x) => s + x.p.price.price * x.l.qty, 0), boxes = lines.reduce((s, x) => s + x.l.qty, 0);
+  const sh = a.shippingFor(goods);
+  return { lines, goods, boxes, fee: sh.fee, over: sh.over, base: sh.base, total: goods + sh.fee };
+}
+const shipText = (t) => (t.fee ? fmtExact(t.fee) : t.base ? '무료' : '0원');
+function FreeShip(t) {
+  if (!t.over || !t.base || !t.goods) return '';
+  const left = t.over - t.goods;
+  return left > 0 ? `<div class="freeship"><span class="t13"><b>${fmtExact(left)}</b> 더 담으면 무료배송</span><span class="meter"><i style="width:${Math.min(100, (t.goods / t.over) * 100).toFixed(1)}%"></i></span></div>`
+    : `<div class="freeship done"><span class="t13">무료배송 금액을 채웠어요</span><span class="meter"><i style="width:100%"></i></span></div>`;
+}
+function MiniCart(a, prods) {
+  const t = cartTotals(a, prods);
+  return `<aside class="minicart" aria-label="장바구니 요약"><div class="row between"><h2>장바구니</h2><span class="t13 sub">${t.lines.length}개 옵션 · ${t.boxes}박스</span></div>
+    ${t.lines.length ? `<div class="mclines">${t.lines.map(({ k, l, p, opt }) => `<div class="mcl"><span class="nm">${esc(p.name)}${opt ? ` <span class="sub">(${esc(opt.name)})</span>` : ''}</span>
+        <div class="row between nowrap">${Stepper('cartqty', 'cartset', k, l.qty)}<b class="num">${fmtExact(p.price.price * l.qty)}</b></div></div>`).join('')}</div>
+      ${FreeShip(t)}<div class="sumline"><span class="sub">배송비</span><span>${shipText(t)}</span></div>
+      <div class="sumline total"><span class="t13">총 ${t.boxes}박스</span><span>${fmtExact(t.total)}</span></div>
+      <button class="btn lg block" data-act="nav" data-p="checkout">주문서 작성</button>`
+    : `<p class="t13 sub">주문할 상품을 담아 주세요. 옵션과 박스 수량을 고른 뒤 담기를 누르면 여기에 모입니다.</p>`}</aside>`;
+}
+/** 자주 주문한 상품: 최근 180일 주문 횟수 → 박스 수 순서, 마지막 주문 수량을 기본값으로 (U-03, G-16) */
+function frequentProducts(orders, prods, n = 3) {
+  const since = Date.now() - 180 * 864e5; const stat = {};
+  for (const o of orders) {
+    if (['cancelled', 'refunded'].includes(o.status) || new Date(o.created_at).getTime() < since) continue;
+    const per = {}; for (const i of o.items) per[i.product_id] = (per[i.product_id] || 0) + i.qty_boxes;
+    const at = new Date(o.created_at).getTime();
+    for (const [pid, q] of Object.entries(per)) { const st = stat[pid] || (stat[pid] = { orders: 0, boxes: 0, last: 1, at: 0 }); st.orders++; st.boxes += q; if (at >= st.at) { st.at = at; st.last = q; } }
+  }
+  return Object.entries(stat).map(([pid, st]) => ({ p: prods.find((x) => x.id === pid), ...st })).filter((x) => x.p)
+    .sort((x, y) => y.orders - x.orders || y.boxes - x.boxes).slice(0, n);
+}
+/** 다시 주문할 최근 주문 3건: 같은 품목·수량 묶음은 가장 최근 1건만 */
+function recentReorders(orders, n = 3) {
+  const seen = new Set(), out = [];
+  for (const o of orders) {
+    if (!o.items.length || ['cancelled', 'refunded'].includes(o.status)) continue;
+    const sig = o.items.map((i) => `${i.product_id}|${i.option_id || ''}|${i.qty_boxes}`).sort().join(',');
+    if (seen.has(sig)) continue; seen.add(sig); out.push(o); if (out.length >= n) break;
+  }
+  return out;
+}
+/** 지난 주문을 지금 그대로 담을 수 있는지: 판매 중지·옵션 변경·가격 변동 */
+function reorderCheck(o, prods) {
+  let gone = 0, changed = 0;
+  for (const i of o.items) { const p = prods.find((x) => x.id === i.product_id);
+    if (!p || (p.options.length && !p.options.some((x) => x.id === i.option_id))) gone++; else if (p.price.price !== i.unit_price) changed++; }
+  return { gone, changed };
+}
+/** 배송비·부가세 규칙 한 줄 (U-01: 결제 전에 모든 비용이 보인다) */
+function costRuleText(a) {
+  const sh = a.shippingFor(0);
+  const ship = sh.base ? `배송비 ${fmtExact(sh.base)}${sh.over ? ` · ${fmtWon(sh.over)} 이상 무료` : ''}` : '배송비 무료';
+  return `모든 가격은 1박스·부가세 포함 · ${ship}`;
+}
+function ownerShop(a, me) {
+  const prods = a.listProducts(); const cats = a.listCategories().filter((c) => prods.some((p) => p.category_id === c.id));
+  const store = (db.stores.find((s) => s.id === me.store_id) || {}).name || '';
+  const head = `<div class="shophead"><div class="row"><span class="chip accent">${esc(me.brand_name)} 계약가</span>${store ? `<span class="chip">${esc(store)}</span>` : ''}</div><p class="costrule">${costRuleText(a)}</p></div>`;
+  if (!prods.length) return head + EmptyState('아직 우리 브랜드 계약 단가가 없습니다', '본사 또는 운영자에게 문의해 주세요.');
+  const orders = a.listOrders();
+  const recent = recentReorders(orders);
+  const freq = frequentProducts(orders, prods);
+  for (const f of freq) { state.cardDefault[f.p.id] = f.last; if (state.cardQty[f.p.id] == null) state.cardQty[f.p.id] = f.last; }
+  // 첫 블록 = 다시 주문 (U-03, 핵심 기준 2): 최근 주문 다시 담기 + 자주 주문한 상품
+  const again = recent.length ? `<section class="again" aria-labelledby="again-h"><div class="row between"><h2 id="again-h">다시 주문</h2><button class="textbtn" data-act="nav" data-p="myorders">주문내역</button></div>
+      <div class="rolist">${recent.map((o) => { const c = reorderCheck(o, prods);
+        const note = c.gone ? `${c.gone}개 품목은 지금 주문할 수 없어요` : c.changed ? `${c.changed}개 품목 가격이 바뀌었어요` : '지난번 그대로 담아요';
+        return `<div class="rorow"><div class="rotext"><b>${firstItemText(o)}</b><span class="t13 sub">${fmtDateOnly(o.created_at)} · ${orderBoxes(o)}박스 · ${fmtExact(o.total)}</span><span class="t13 ${c.gone || c.changed ? 'warntext' : 'sub'}">${note}</span></div>
+          <button class="btn" data-act="quickreorder" data-o="${o.id}" aria-label="${fmtDateOnly(o.created_at)} 주문 다시 담기">다시 담기</button></div>`; }).join('')}</div>
+      ${freq.length ? `<h3 class="subhead">자주 주문한 상품</h3><div class="pgrid">${freq.map((f) => ProductCard(f.p, `지난번 ${f.last}박스${f.orders > 1 ? ` · 최근 ${f.orders}번 주문` : ''}`)).join('')}</div>` : ''}</section>`
+    : `<section class="again first"><h2>첫 주문을 시작해 볼까요?</h2><p class="t13 sub">상품을 담아 한 번 주문하면, 다음부터는 이 자리에서 지난 주문을 그대로 다시 담을 수 있어요.</p></section>`;
+  const catalog = `<section class="catalog" aria-labelledby="cat-h"><h2 id="cat-h" class="sr">전체 상품</h2>
+    <label class="search">${ICON.search}<input type="search" id="shop-q" value="${esc(state.shopQ || '')}" data-input="shopq" placeholder="상품명, 코드 또는 옵션 검색" aria-label="상품 검색" autocomplete="off"></label>
+    <div class="cats" role="group" aria-label="품목"><button data-act="cat" data-c="all" aria-pressed="${state.shopCat === 'all'}">전체<span class="n">${prods.length}</span></button>${cats.map((c) => `<button data-act="cat" data-c="${c.id}" aria-pressed="${state.shopCat === c.id}">${esc(c.name)}<span class="n">${prods.filter((p) => p.category_id === c.id).length}</span></button>`).join('')}</div>
+    <div id="shoplist" class="stack">${shopListHtml(prods)}</div></section>`;
+  return `<div class="shopgrid"><div class="stack s5">${head}${again}${catalog}</div>${MiniCart(a, prods)}</div>`;
+}
+
+/* ---------- 주문 진행 ---------- */
+const STEP_MSG = { pending_payment: ['입금을 기다리고 있어요', '입금이 확인되면 바로 출고 준비를 시작합니다.'],
+  card_pending: ['카드 결제 확인을 기다리고 있어요', '카드 결제창 연결 전이라 운영자가 결제 방법을 안내하고, 결제가 확인되면 출고합니다.'], paid: ['결제가 확인됐어요', '곧 배송 준비를 시작합니다.'],
+  preparing: ['상품을 준비하고 있어요', '송장이 등록되면 여기서 확인할 수 있습니다.'], shipped: ['배송 중이에요', '송장번호를 복사해 택배사 조회 화면에 붙여넣으세요.'],
+  delivered: ['배송이 끝났어요', '필요한 상품은 다시 담기로 빠르게 주문하세요.'] };
+function Progress(o) {
+  if (['cancelled', 'refunded'].includes(o.status)) return `<div class="progress off"><b>${o.status === 'refunded' ? '취소·환불된 주문입니다' : '취소된 주문입니다'}</b><span class="t13">이미 받은 금액이 있으면 운영자가 따로 돌려드립니다.</span></div>`;
+  const idx = ORDER_STEPS.indexOf(o.status); const [t1, t2] = (o.status === 'pending_payment' && o.pay_method === 'card' ? STEP_MSG.card_pending : STEP_MSG[o.status]) || ['', ''];
+  return `<div class="progress"><div class="stack s2"><b>${t1}</b><span class="t13">${t2}</span></div>
+    <ol class="steps">${ORDER_STEPS.map((s, i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}" ${i === idx ? 'aria-current="step"' : ''}><i>${i < idx ? '✓' : i + 1}</i><span>${statusName(o, s)}</span></li>`).join('')}</ol></div>`;
+}
+function MiniSteps(o) {
+  if (['cancelled', 'refunded'].includes(o.status)) return '';
+  const idx = ORDER_STEPS.indexOf(o.status);
+  return `<div class="msteps" aria-hidden="true">${ORDER_STEPS.map((s, i) => `<i class="${i <= idx ? 'on' : ''}"></i>`).join('')}</div>`;
+}
+const CARRIER_LINKS = [[/cj|대한통운/i, 'https://www.cjlogistics.com/ko/tool/parcel/tracking'], [/한진/, 'https://www.hanjin.com/kor/CMS/DeliveryMgr/WaybillSch.do?mCode=MN038'],
+  [/롯데/, 'https://www.lotteglogis.com/home/reservation/tracking/index'], [/우체국|epost/i, 'https://service.epost.go.kr/iservice/usr/trace/usrtrc001k01.jsp']];
+const carrierLink = (c) => (CARRIER_LINKS.find(([re]) => re.test(c || '')) || [])[1] || null;
+function TrackCard(o, compact) {
+  if (!o.shipment) return '';
+  const link = carrierLink(o.shipment.carrier);
+  return `<div class="trackline ${compact ? 'compact' : ''}"><span class="stack" style="gap:0"><span class="t13 sub">${esc(o.shipment.carrier)} · 송장번호</span><span class="no" id="trk-${o.id}">${esc(o.shipment.tracking_no)}</span></span>
+    <span class="row"><button class="btn secondary sm" data-act="copytrack" data-o="${o.id}">${ICON.copy}송장 복사</button>${link && !compact ? `<a class="btn secondary sm" href="${link}" target="_blank" rel="noopener" data-track="Tracking Opened" data-carrier="${esc(o.shipment.carrier)}">택배사 조회 ↗</a>` : ''}</span></div>`;
+}
+const orderBoxes = (o) => o.items.reduce((s, i) => s + i.qty_boxes, 0);
+const firstItemText = (o) => (o.items.length ? `${esc(o.items[0].product_name)}${o.items.length > 1 ? ` 외 ${o.items.length - 1}종` : ''}` : '-');
+function OrderCardOwner(o) {
+  return `<article class="ocard"><div class="head"><div><button class="olink num" data-act="openorder" data-o="${o.id}">${esc(o.no)}</button><div class="t13 sub">${fmtDate(o.created_at)} · ${PAY[o.pay_method] || o.pay_method}</div></div>${OStatus(o)}</div>
+    <div class="osum"><span>${firstItemText(o)}</span><b class="num">${orderBoxes(o)}박스 · ${fmtExact(o.total)}</b></div>
+    ${MiniSteps(o)}${TrackCard(o, true)}
+    ${o.status === 'pending_payment' ? `<p class="note warn">${o.pay_method === 'card' ? '운영자가 카드 결제를 확인한 뒤 출고됩니다.' : '입금 확인 후 출고됩니다.'}</p>` : ''}
+    <div class="row"><button class="btn secondary sm" data-act="openorder" data-o="${o.id}">주문 상세</button><button class="btn secondary sm" data-act="reorder" data-o="${o.id}">다시 담기</button></div></article>`;
+}
+const OwnerTabs = (cur) => `<div class="seg wide" role="group" aria-label="주문내역 보기" style="--n:2;--i:${cur === 'mytax' ? 1 : 0}"><button data-act="nav" data-p="myorders" aria-pressed="${cur !== 'mytax'}">주문</button><button data-act="nav" data-p="mytax" aria-pressed="${cur === 'mytax'}">세금계산서</button></div>`;
+function ownerOrders(a, me) {
+  const list = a.listOrders(); const f = state.myFilter || 'all';
+  const G = { all: ['전체', () => true], active: ['진행 중', (o) => ['pending_payment', 'paid', 'preparing', 'shipped'].includes(o.status)], done: ['배송 완료', (o) => o.status === 'delivered'], cancel: ['취소', (o) => ['cancelled', 'refunded'].includes(o.status)] };
+  const shown = list.filter(G[f][1]);
+  return PageHead('주문내역', '', `${esc(me.brand_name)} · 주문·배송`) + OwnerTabs('myorders') +
+    `<div class="cats" role="group" aria-label="주문 상태">${Object.entries(G).map(([k, [l, fn]]) => `<button data-act="myfilter" data-v="${k}" aria-pressed="${f === k}">${l}<span class="n">${list.filter(fn).length}</span></button>`).join('')}</div>` +
+    (shown.length ? `<div class="orderlist">${shown.map(OrderCardOwner).join('')}</div>` : list.length ? EmptyState('이 상태의 주문이 없습니다', '') : EmptyState('아직 주문이 없습니다', '상품을 담아 첫 주문을 만들어 보세요.', `<button class="btn" data-act="nav" data-p="shop">주문하러 가기</button>`));
+}
+/** 주문 상세 — 점주 화면과 운영자 시트가 같이 쓴다 */
+function OrderDetail(a, o, staff) {
+  const bank = a.publicInfo().bank_account;
+  const st = o.ship_to;
+  const head = `<div class="ohead"><div class="stack s2"><span class="label">${fmtDate(o.created_at)} · ${PAY[o.pay_method] || o.pay_method}${staff ? ` · ${esc(o.brand_name)} ${esc(o.store_name)}` : ''}</span>
+      <div class="row"><h2 class="num" id="ono-${o.id}">${esc(o.no)}</h2><button class="btn secondary sm" data-act="copyno" data-o="${o.id}">${ICON.copy}주문번호 복사</button></div></div>${OStatus(o)}</div>`;
+  const pay = o.status === 'pending_payment' && o.pay_method === 'card' ? `<section class="dblock"><h3>카드 결제 안내</h3><p class="t13 sub">카드 결제창 연결 전입니다. 운영자가 결제 방법을 안내해 드리고, 결제가 확인되면 출고합니다.</p><div class="sumline"><span class="sub">결제할 금액</span><b>${fmtExact(o.total)}</b></div></section>`
+    : o.status === 'pending_payment' && o.pay_method === 'bank' ? `<section class="dblock"><h3>입금 안내</h3><div class="sumline"><span class="sub">입금할 금액</span><b>${fmtExact(o.total)}</b></div>
+      <div class="sumline"><span class="sub">입금 계좌</span><span id="bank-${o.id}">${esc(bank || '(운영자 안내 예정)')}</span></div>${bank ? `<button class="btn secondary sm start" data-act="copybank" data-o="${o.id}">${ICON.copy}계좌번호 복사</button>` : ''}</section>` : '';
+  const ship = `<section class="dblock"><h3>배송 정보</h3>${TrackCard(o) || (['cancelled', 'refunded'].includes(o.status) ? '' : '<p class="t13 sub">송장이 등록되면 여기서 확인할 수 있습니다.</p>')}
+      ${st ? `<div class="addr"><b>${esc(st.name)}</b> <span class="sub">${esc(st.phone)}</span><br>${st.zip ? `(${esc(st.zip)}) ` : ''}${esc(st.addr1)} ${esc(st.addr2 || '')}${st.memo ? `<br><span class="t13 sub">메모: ${esc(st.memo)}</span>` : ''}</div>` : `<p class="t13 sub">${o.pay_method === 'import' ? '시트로 옮긴 주문이라 배송지 기록이 없습니다.' : '배송지 기록이 없습니다.'}</p>`}</section>`;
+  const items = `<section class="dblock"><h3>주문 상품</h3><div class="lines">${o.items.map((i) => `<div class="sumline"><span>${esc(i.product_name)}${i.option_name ? ` <span class="sub">(${esc(i.option_name)})</span>` : ''}<br><span class="t13 sub">${fmtBoxes(i.qty_boxes, i.pack_qty)} · ${fmtExact(i.unit_price)}</span></span><span>${fmtExact(i.unit_price * i.qty_boxes)}</span></div>`).join('')}
+      <div class="sumline"><span class="sub">배송비</span><span>${o.shipping_fee ? fmtExact(o.shipping_fee) : '0원'}</span></div>${o.discount ? `<div class="sumline"><span class="sub">할인</span><span>-${fmtExact(o.discount)}</span></div>` : ''}
+      <div class="sumline total"><span class="t13">총 ${orderBoxes(o)}박스</span><span>${fmtExact(o.total)}</span></div></div>${o.note ? `<p class="t13 sub">${esc(o.note)}</p>` : ''}</section>`;
+  const ev = o.events || [];
+  const hist = ev.length ? `<details class="dblock"><summary class="b clickable">처리 이력 ${ev.length}건</summary><ol class="hist">${ev.slice().reverse().map((e) => `<li><span class="t13 sub num">${fmtDate(e.at)}</span><span>${esc(e.text)}</span></li>`).join('')}</ol></details>` : '';
+  const tax = staff ? (o.tax_invoice ? `<section class="dblock"><h3>세금계산서</h3>${StatusChip(TAX, o.tax_invoice.status)} <span class="t13 sub">${esc(o.tax_invoice.buyer.company)} · ${fmtBizNo(o.tax_invoice.buyer.biz_no)}</span></section>` : '') : TaxBlock(o);
+  const acts = staff ? '' : `<div class="row">${o.items.length ? `<button class="btn secondary" data-act="reorder" data-o="${o.id}">현재 가격으로 다시 담기</button>` : ''}${o.status === 'pending_payment' ? `<button class="btn danger" data-act="askmycancel" data-o="${o.id}">주문 취소</button>` : ''}</div>`;
+  return `<div class="odetail">${head}${Progress(o)}${pay}${ship}${items}${tax}${hist}${acts}</div>`;
+}
+function TaxBlock(o) {
+  const t = o.tax_invoice;
+  if (o.pay_method === 'card') return `<section class="dblock"><h3>증빙</h3><p class="t13 sub">카드 결제 주문은 카드 매출전표가 증빙입니다.</p></section>`;
+  if (o.pay_method !== 'bank') return '';
+  const can = ['paid', 'preparing', 'shipped', 'delivered'].includes(o.status);
+  if (!t) return ['cancelled', 'refunded'].includes(o.status) ? '' : `<section class="dblock"><h3>세금계산서</h3>${can ? `<p class="t13 sub">필요하면 사업자 정보를 넣어 신청하세요. 운영자가 발행한 뒤 승인번호가 여기 기록됩니다.</p><button class="btn secondary start" data-act="taxreq" data-o="${o.id}">세금계산서 신청</button>` : '<p class="t13 sub">입금이 확인되면 신청할 수 있어요.</p>'}</section>`;
+  return `<section class="dblock"><h3>세금계산서</h3><div class="row">${StatusChip(TAX, t.status)}<span class="t13 sub">${esc(t.buyer.company)} · ${fmtBizNo(t.buyer.biz_no)}</span></div>
+    ${t.status === 'returned' ? `<p class="note warn">보완 요청: ${esc(t.note || '')}</p><button class="btn secondary start" data-act="taxreq" data-o="${o.id}">고쳐서 다시 신청</button>` : ''}
+    ${t.status === 'requested' ? `<p class="t13 sub">운영자가 확인하고 있습니다. 발행되면 승인번호가 기록됩니다.</p><button class="textbtn start" data-act="taxreq" data-o="${o.id}">신청 내용 고치기</button>` : ''}
+    ${t.status === 'issued' ? `<div class="sumline"><span class="sub">승인번호</span><span class="num">${esc(t.approval_no)}</span></div><div class="sumline"><span class="sub">공급가액 / 세액</span><span>${fmtExact(t.supply_amount)} / ${fmtExact(t.tax_amount)}</span></div><div class="sumline"><span class="sub">발행일</span><span>${fmtDay(t.issued_date)}</span></div>` : ''}</section>`;
+}
+function ownerOrderPage(a, me) {
+  const o = guard(() => a.getOrder(state.param));
+  if (!o || o.__error) return `<button class="textbtn backlink" data-act="nav" data-p="myorders">← 주문내역</button>` + EmptyState('주문을 찾을 수 없습니다', '주문내역에서 다시 열어 주세요.');
+  return `<button class="textbtn backlink" data-act="nav" data-p="myorders">← 주문내역</button><div class="card">${OrderDetail(a, o, false)}</div>`;
+}
+function ownerTax(a, me) {
+  const list = a.listTaxInvoices();
+  const can = a.listOrders().filter((o) => o.pay_method === 'bank' && ['paid', 'preparing', 'shipped', 'delivered'].includes(o.status) && !o.tax_invoice);
+  return PageHead('세금계산서', '계좌이체 주문만 신청할 수 있습니다. 카드 결제 주문은 카드 매출전표가 증빙입니다.', `${esc(me.brand_name)} · 증빙`) + OwnerTabs('mytax') +
+    (can.length ? `<section class="card"><h2>신청할 수 있는 주문</h2><div class="lines">${can.map((o) => `<div class="sumline"><span><b class="num">${esc(o.no)}</b><br><span class="t13 sub">${fmtDateOnly(o.created_at)} · ${firstItemText(o)} · ${fmtExact(o.total)}</span></span><button class="btn secondary sm" data-act="taxreq" data-o="${o.id}">신청</button></div>`).join('')}</div></section>` : '') +
+    (list.length ? `<div class="orderlist">${list.map((t) => `<article class="ocard"><div class="head"><div><button class="olink num" data-act="openorder" data-o="${t.order_id}">${esc(t.order_no || '')}</button><div class="t13 sub">${esc(t.buyer.company)} · ${fmtBizNo(t.buyer.biz_no)}</div></div>${StatusChip(TAX, t.status)}</div>
+        <div class="osum"><span class="t13 sub">신청 ${fmtDateOnly(t.created_at)}</span><b class="num">${fmtExact(t.order_total)}</b></div>
+        ${t.status === 'returned' ? `<p class="note warn">보완 요청: ${esc(t.note || '')}</p><button class="btn secondary sm start" data-act="taxreq" data-o="${t.order_id}">고쳐서 다시 신청</button>` : ''}
+        ${t.status === 'issued' ? `<div class="sumline"><span class="sub">승인번호</span><span class="num">${esc(t.approval_no)}</span></div>` : ''}</article>`).join('')}</div>`
+      : can.length ? '' : EmptyState('신청한 세금계산서가 없습니다', '입금이 확인된 계좌이체 주문에서 신청할 수 있어요.'));
+}
+const eqText = (qty, pack) => (pack ? `= <b>${(qty * pack).toLocaleString('ko-KR')}</b>개 (${pack.toLocaleString('ko-KR')}개입 × ${qty})` : `${qty}박스 · 입수량 미등록`);
+function ownerCart(a, me) {
+  const prods = a.listProducts(); const t = cartTotals(a, prods);
+  if (!t.lines.length) return { html: PageHead('장바구니', '', esc(me.brand_name)) + EmptyState('주문할 상품을 담아 주세요', '옵션과 박스 수량을 고른 뒤 담기를 누르세요.', `<button class="btn" data-act="nav" data-p="shop">주문하러 가기</button>`), bar: '' };
+  const html = PageHead('장바구니', '', esc(me.brand_name), `<button class="textbtn" data-act="askclearcart">전체 비우기</button>`) + `<div class="cartgrid"><div class="cartlist">${t.lines.map(({ k, l, p, opt }) => `<div class="crow">${Thumb(p)}
+      <span class="cname">${esc(p.name)}${opt ? ` <span class="sub t14">(${esc(opt.name)})</span>` : ''}<br><span class="t13 sub" style="font-weight:500">${p.code ? esc(p.code) + ' · ' : ''}${packText(p.pack_qty)} · ${fmtExact(p.price.price)}</span></span>
+      <span class="camt">${fmtExact(p.price.price * l.qty)}</span>
+      <span class="cqty">${Stepper('cartqty', 'cartset', k, l.qty)}<span class="eq">${eqText(l.qty, p.pack_qty)}</span></span>
+      <button class="textbtn cdel" data-act="cartdel" data-k="${k}">빼기</button></div>`).join('')}</div>
+    <aside class="sumbox"><h2 class="section-title">결제 예정 금액</h2>
+      <div class="sumline"><span class="sub">상품 (${t.boxes}박스)</span><span>${fmtExact(t.goods)}</span></div><div class="sumline"><span class="sub">배송비</span><span>${shipText(t)}</span></div>
+      ${FreeShip(t)}<div class="sumline total"><span class="t13">총 ${t.boxes}박스 · 배송비 포함</span><span>${fmtExact(t.total)}</span></div>
+      <p class="t13 sub">부가세 포함 · 다음 화면에서 배송지와 주문 금액을 확인합니다.</p>
+      <button class="btn lg block order-btn" data-act="nav" data-p="checkout">주문서 작성</button></aside></div>`;
+  const bar = `<div class="paybar"><div><span class="t13 sub">총 ${t.boxes}박스 · 배송비 포함</span><div class="tot">${fmtExact(t.total)}</div></div><button class="btn lg" data-act="nav" data-p="checkout">주문서 작성</button></div>`;
+  return { html, bar };
+}
+/** 배송지 기본값: 최근 주문 배송지 → 매장 정보 */
+function lastShipTo(a) { const o = a.listOrders().find((x) => x.ship_to && x.ship_to.addr1); return o ? { ...o.ship_to } : null; }
+function storeShipTo(me) { const s = db.stores.find((x) => x.id === me.store_id) || {}; return { name: s.name || '', phone: s.phone || '', zip: '', addr1: s.address || '', addr2: '', memo: '' }; }
+function ownerCheckout(a, me) {
+  const prods = a.listProducts(); const t = cartTotals(a, prods);
+  if (!t.lines.length) return { html: PageHead('주문서', '', esc(me.brand_name)) + EmptyState('담긴 상품이 없습니다', '상품을 담은 뒤 주문서를 작성해 주세요.', `<button class="btn" data-act="nav" data-p="shop">주문하러 가기</button>`), bar: '' };
+  if (!state.clientKey) state.clientKey = 'ck-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const d = state.shipDraft || lastShipTo(a) || storeShipTo(me);
+  const pay = state.payDraft || 'bank';
+  const info = a.publicInfo();
+  const btnText = !info.order_open ? '지금은 주문 접수를 멈췄습니다' : pay === 'bank' ? '주문 접수 (입금 후 출고)' : '주문 접수 (카드 결제 안내)';
+  const html = PageHead('주문서 확인', '배송지와 결제 방법을 확인한 뒤 주문을 접수합니다.', esc(me.brand_name)) +
+    `<form data-form="checkout" id="checkout-form" class="cartgrid" novalidate><div class="stack">
+      <section class="card"><div class="row between"><h2>배송지</h2><div class="row"><button type="button" class="btn secondary sm" data-act="lastship">최근 배송지 불러오기</button><button type="button" class="btn secondary sm" data-act="storeship">매장 정보로</button></div></div>
+        <div class="grid2">${Field('co-name', 'name', '받는 분', 'required autocomplete="name"', d.name)}${Field('co-phone', 'phone', '연락처', 'required inputmode="tel" autocomplete="tel" placeholder="010-0000-0000"', d.phone)}</div>
+        <div class="grid2">${Field('co-zip', 'zip', '우편번호 (선택)', 'inputmode="numeric" autocomplete="postal-code"', d.zip)}</div>
+        ${Field('co-addr1', 'addr1', '주소', 'required autocomplete="street-address"', d.addr1)}${Field('co-addr2', 'addr2', '상세 주소 (선택)', '', d.addr2)}
+        ${Field('co-memo', 'memo', '배송 메모 (선택)', 'placeholder="예: 영업 전 오전 10시까지 매장 앞"', d.memo)}</section>
+      <section class="card"><h2>결제 방법</h2><div class="opts"><label><input type="radio" name="pay" value="bank" ${pay === 'bank' ? 'checked' : ''} data-change="paydraft"><span>계좌이체</span></label><label><input type="radio" name="pay" value="card" ${pay === 'card' ? 'checked' : ''} data-change="paydraft"><span>카드</span></label></div>
+        ${pay === 'bank' ? `<div class="note">입금 계좌 <b>${esc(info.bank_account || '(운영자 안내 예정)')}</b><br>입금이 확인되면 출고를 시작합니다. 세금계산서는 계좌이체 주문에서 신청할 수 있어요.</div>`
+          : `<div class="note">카드 결제창 연결 전입니다. 카드로 접수하면 운영자가 결제 방법을 안내하고, 결제가 확인되면 출고합니다. 카드 결제 주문은 카드 매출전표가 증빙입니다.</div>`}</section>
+      <section class="card"><h2>약관 확인</h2>${info.footer.shipping_info ? `<details class="terms"><summary class="clickable">배송 안내</summary><div class="legal t13">${esc(info.footer.shipping_info)}</div></details>` : ''}
+        ${info.footer.return_info ? `<details class="terms"><summary class="clickable">교환·반품 안내</summary><div class="legal t13">${esc(info.footer.return_info)}</div></details>` : ''}
+        <details class="terms"><summary class="clickable">이용약관 보기</summary><div class="legal t13">${esc(info.footer.terms || '아직 등록된 약관이 없습니다.')}</div></details>
+        <label class="check"><input type="checkbox" name="agree" value="1" ${state.agreeDraft ? 'checked' : ''}> 주문 내용과 이용약관을 확인했습니다</label></section></div>
+    <aside class="sumbox"><h2 class="section-title">주문 상품</h2><div class="review">${t.lines.map(({ l, p, opt }) => `<div class="sumline"><span>${esc(p.name)}${opt ? ` <span class="sub">(${esc(opt.name)})</span>` : ''}<br><span class="t13 sub">${l.qty}박스 × ${fmtExact(p.price.price)}</span></span><span>${fmtExact(p.price.price * l.qty)}</span></div>`).join('')}</div>
+      <div class="sumline"><span class="sub">상품 (${t.boxes}박스)</span><span>${fmtExact(t.goods)}</span></div><div class="sumline"><span class="sub">배송비</span><span>${shipText(t)}</span></div>${FreeShip(t)}
+      <div class="sumline total"><span class="t13">총 결제 금액</span><span>${fmtExact(t.total)}</span></div><p class="t13 sub">부가세 포함 · 계약 단가 기준</p>
+      <button class="btn lg block order-btn" type="submit" ${info.order_open ? '' : 'disabled'}>${btnText}</button></aside></form>`;
+  const bar = `<div class="paybar"><div><span class="t13 sub">총 ${t.boxes}박스 · 배송비 포함</span><div class="tot">${fmtExact(t.total)}</div></div><button class="btn lg" type="submit" form="checkout-form" ${info.order_open ? '' : 'disabled'}>주문 접수</button></div>`;
+  return { html, bar };
+}
+function productSheet(pid) {
+  const p = api().listProducts().find((x) => x.id === pid); if (!p) return '';
+  const qty = state.modal.qty || 1;
+  return `<div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(p.name)}"><div class="sheethead"><span class="label">${esc((db.categories.find((c) => c.id === p.category_id) || {}).name || '')}</span><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <div class="pdetail"><div class="big">${p.image ? `<img src="${p.image}" alt="${esc(p.name)}">` : productArt(p.img)}${specOf(p.name) ? `<span class="spec">${specOf(p.name)}</span>` : ''}</div>
+    <form data-form="addcart" class="info"><input type="hidden" name="pid" value="${p.id}">
+      <div class="stack s2"><h2>${esc(p.name)}</h2><span class="t13 sub">${p.code ? esc(p.code) + ' · ' : ''}${packText(p.pack_qty)}</span></div>
+      <div><span class="price">${fmtExact(p.price.price)}</span> <span class="sub">/ 박스</span></div>
+      <span class="chip accent" style="justify-self:start">${esc(api().me().brand_name)} 계약가</span>
+      ${p.options.length ? `<div class="stack s2"><span class="label">옵션</span><div class="opts">${p.options.map((o, i) => `<label><input type="radio" name="opt" value="${o.id}" ${(state.modal.opt ? o.id === state.modal.opt : i === 0) ? 'checked' : ''}><span>${esc(o.name)}</span></label>`).join('')}</div></div>` : ''}
+      <div class="stack s2"><span class="label">수량</span><div class="qtyline">${Stepper('sheetqty', 'sheetqtyset', 'sheet', qty, true)}<span class="eq">${eqText(qty, p.pack_qty)}</span></div></div>
+      <div class="sumline total"><span class="t13">${qty}박스</span><span>${fmtExact(p.price.price * qty)}</span></div>
+      <button class="btn lg block" type="submit">장바구니 담기</button></form></div></div>`;
+}
+/** 지난 주문 다시 담기: 지금 가격·판매 여부를 확인하고 담는다 */
+function reorderSheet(oid) {
+  const a = api(); const o = guard(() => a.getOrder(oid)); if (!o || o.__error) return '';
+  const prods = a.listProducts();
+  const rows = o.items.map((i) => { const p = prods.find((x) => x.id === i.product_id); let why = '';
+    if (!p) why = '지금은 주문할 수 없는 상품이에요'; else if (p.options.length && !p.options.some((x) => x.id === i.option_id)) why = '옵션이 바뀌어 다시 골라야 해요';
+    return { i, p, why }; });
+  const ok = rows.filter((r) => !r.why); const sum = ok.reduce((s, r) => s + r.p.price.price * r.i.qty_boxes, 0);
+  const hasCart = Object.keys(state.cart).length > 0; const mode = state.modal.mode || 'add';
+  return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="지난 주문 다시 담기"><div class="sheethead"><h2>지난 주문 다시 담기</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <p class="t13 sub">${esc(o.no)} · ${fmtDateOnly(o.created_at)} — 현재 가격으로 담습니다. 지난 주문 금액과 다를 수 있어요.</p>
+    <div class="lines">${rows.map(({ i, p, why }) => `<div class="sumline ${why ? 'off' : ''}"><span>${esc(i.product_name)}${i.option_name ? ` <span class="sub">(${esc(i.option_name)})</span>` : ''}<br><span class="t13 ${why ? 'warntext' : 'sub'}">${why || `${i.qty_boxes}박스 × ${fmtExact(p.price.price)}${p.price.price !== i.unit_price ? ` (지난 단가 ${fmtExact(i.unit_price)})` : ''}`}</span></span><span>${why ? '-' : fmtExact(p.price.price * i.qty_boxes)}</span></div>`).join('')}
+      <div class="sumline total"><span class="t13">${ok.length}개 품목</span><span>${fmtExact(sum)}</span></div></div>
+    ${hasCart ? `<div class="seg wide" role="group" aria-label="담는 방법" style="--n:2;--i:${mode === 'replace' ? 1 : 0}"><button data-act="reordermode" data-v="add" aria-pressed="${mode !== 'replace'}">기존 장바구니에 추가</button><button data-act="reordermode" data-v="replace" aria-pressed="${mode === 'replace'}">장바구니 바꾸기</button></div>` : ''}
+    <button class="btn lg block" data-act="doreorder" data-o="${o.id}" ${ok.length ? '' : 'disabled'}>확인하고 담기</button></div>`;
+}
+function taxReqSheet(oid) {
+  const a = api(); const o = guard(() => a.getOrder(oid)); if (!o || o.__error) return '';
+  const me = a.me(); const s = db.stores.find((x) => x.id === me.store_id) || {};
+  const prev = (o.tax_invoice && o.tax_invoice.buyer) || ((a.listTaxInvoices()[0] || {}).buyer) || { biz_no: s.biz_no || '', company: s.name ? `${me.brand_name} ${s.name}` : '', ceo: s.ceo || '', address: s.address || '' };
+  return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="세금계산서 신청"><div class="sheethead"><h2>세금계산서 신청</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <p class="t13 sub">${esc(o.no)} · ${fmtExact(o.total)}</p>
+    <form data-form="taxreq" class="stack"><input type="hidden" name="oid" value="${o.id}">
+      ${Field('tx-biz', 'biz_no', '사업자등록번호', 'required inputmode="numeric" placeholder="000-00-00000"', fmtBizNo(prev.biz_no))}
+      <div class="grid2">${Field('tx-co', 'company', '상호', 'required', prev.company)}${Field('tx-ceo', 'ceo', '대표자', 'required', prev.ceo)}</div>
+      ${Field('tx-addr', 'address', '사업장 주소', 'required', prev.address)}
+      <div class="grid2">${Field('tx-type', 'biz_type', '업태 (선택)', 'placeholder="예: 음식점업"', prev.biz_type || '')}${Field('tx-item', 'biz_item', '종목 (선택)', 'placeholder="예: 한식"', prev.biz_item || '')}</div>
+      ${Field('tx-email', 'email', '받을 이메일 (선택)', 'type="email" autocomplete="email"', prev.email || '')}
+      <button class="btn lg block" type="submit">신청하기</button></form></div>`;
+}
+
+/* ---------- 운영자·개발자 ---------- */
+function renderStaff(page) {
+  const a = api(); const me = a.me();
+  const P = {
+    home: () => staffHome(a),
+    sales: () => PageHead('매출', '전체 또는 브랜드를 골라 기준 월에서 거꾸로 1~4개월을 봅니다. 총매출은 각 달을 한 번씩만 더합니다.') + SalesView(null),
+    boxes: () => staffBoxes(a), payback: () => staffPayback(a), approvals: () => staffApprovals(a), brands: () => staffBrands(a),
+    orders: () => staffOrders(a), taxinvoices: () => staffTax(a), payouts: () => staffPayouts(a), notices: () => staffNotices(a), products: () => staffProducts(a), prices: () => staffPrices(a),
+    audit: () => PageHead('감사 로그', '승인·가격 변경·페이백 기준 변경·월 마감을 누가 언제 했는지 남깁니다.') + `<div class="tablewrap"><table class="tbl"><thead><tr><th>시각</th><th>누가</th><th>무엇</th><th>대상</th><th>내용</th></tr></thead><tbody>
+      ${a.auditLogs().slice(0, 200).map((l) => `<tr><td class="nw num t13">${fmtDate(l.at)}</td><td class="nw">${esc(l.user_name)} <span class="t13 sub">${ROLE[l.role]}</span></td><td class="nw b">${esc(l.action)}</td><td>${esc(l.target)}</td><td class="t13">${esc(l.detail)}</td></tr>`).join('') || `<tr><td colspan="5" class="sub">아직 기록이 없습니다.</td></tr>`}</tbody></table></div>`,
+    settings: () => staffSettings(a), qa: () => staffQA(a), design: () => staffDesign(), devsettings: () => staffDev(a),
+  };
+  const out = guard(P[page] || P.sales);
+  return shellLayout(me, page, out && out.__error ? Denied(out.__error) : out);
+}
+const virtSeg = () => Seg('데이터', [['virtual', 0, '실제', !state.virtual], ['virtual', 1, '가상', state.virtual]]);
+const monthInput = (id, val, change, label) => `<input type="month" id="${id}" class="input auto" value="${val}" data-change="${change}" aria-label="${label}">`;
+
+function staffBoxes(a) {
+  const rows = a.boxesReport(state.boxesMonth, state.virtual);
+  const active = rows.filter((r) => Object.values(r.boxes).some((v) => v));
+  const prods = db.products.filter((p) => active.some((r) => r.boxes[p.id]));
+  const sumBoxes = (r) => Object.values(r.boxes).reduce((s, v) => s + v, 0);
+  return PageHead('품목별 박스', '월·브랜드별로 실제로 나간 박스 수입니다. 금액이 아니라 박스로 셉니다. 환불된 박스는 빠집니다.') +
+    `<div class="toolbar">${monthInput('boxes-m', state.boxesMonth, 'boxesMonth', '조회 월')}${virtSeg()}<span class="t13 sub">집계 시점: ${BASIS_LABEL[db.settings.revenue.basis]} · 한국 시간</span><button class="btn secondary sm" data-act="csvboxes">CSV 내려받기</button></div>
+    ${active.length ? `<div class="tablewrap"><table class="tbl"><thead><tr><th>품목</th>${active.map((r) => `<th class="r">${esc(r.brand_name)}</th>`).join('')}<th class="r">합계</th></tr></thead><tbody>
+    ${prods.map((p) => { const tot = active.reduce((s, r) => s + (r.boxes[p.id] || 0), 0); return `<tr><td>${esc(p.name)}<div class="t13 sub">${packText(p.pack_qty)}</div></td>${active.map((r) => `<td class="r">${r.boxes[p.id] ? r.boxes[p.id].toLocaleString('ko-KR') + '박스' : '<span class="sub">-</span>'}</td>`).join('')}<td class="r b">${tot.toLocaleString('ko-KR')}박스</td></tr>`; }).join('')}
+    </tbody><tfoot><tr><td>합계</td>${active.map((r) => `<td class="r">${sumBoxes(r).toLocaleString('ko-KR')}박스</td>`).join('')}<td class="r">${active.reduce((s, r) => s + sumBoxes(r), 0).toLocaleString('ko-KR')}박스</td></tr></tfoot></table></div>`
+      : EmptyState(`${monthLabel(state.boxesMonth)}에는 집계된 박스가 없습니다`, state.virtual ? '' : '시트로 옮긴 실제 데이터는 2026년 7월에 있습니다.')}`;
+}
+function staffPayback(a) {
+  const rows = a.settlement(state.settleMonth, state.virtual);
+  const tbody = rows.map((r) => {
+    const m = r.rule ? (r.rule.method === 'A' ? `방식 A · ${r.rule.rate}%` : '방식 B · 박스당') : '<span class="sub">기준 미설정</span>';
+    return `<tr><td class="nw b">${esc(r.brand_name)}</td><td class="nw t13">${m}</td><td class="r">${fmtExact(r.amount)}${r.adjustments ? `<div class="t13 sub">마감월 조정 ${fmtExact(r.adjustments)}</div>` : ''}</td>
+      <td class="r">${fmtExact(r.payback)}${r.payback_missing_boxes ? `<div class="t13 warntext">단가 미정 ${r.payback_missing_boxes}박스 제외</div>` : ''}</td><td class="r">${fmtExact(r.payback_vat)}</td><td class="r b">${fmtExact(r.payback + r.payback_vat)}</td>
+      <td class="nw">${r.closed ? `${Chip('마감', 'st-done')}<div class="t13 sub">${fmtDateOnly(r.closing.closed_at)}</div>` : r.amount || r.payback ? `<button class="btn secondary sm" data-act="askclose" data-b="${r.brand_id}">월 마감</button>` : '<span class="t13 sub">대상 없음</span>'}</td></tr>`;
+  }).join('');
+  const tot = rows.reduce((s, r) => ({ amount: s.amount + r.amount, payback: s.payback + r.payback, vat: s.vat + r.payback_vat }), { amount: 0, payback: 0, vat: 0 });
+  const brandRules = db.brands.map((b) => { const cur = a.currentPaybackRule(b.id); const hist = a.listPaybackRules(b.id);
+    return `<section class="card"><div class="row between"><h2>${esc(b.name)}</h2><button class="btn secondary sm" data-act="editrule" data-b="${b.id}">기준 설정</button></div>
+      ${cur ? (cur.method === 'A' ? `<p>방식 A · 정산 대상 매출 × <b>${cur.rate}%</b></p>` : `<p>방식 B · 품목별 박스당 금액 (${Object.values(cur.per_box).filter((v) => v != null).length}개 품목)</p>`) : '<p class="sub">아직 정산 기준이 없습니다.</p>'}
+      ${hist.length ? `<p class="t13 sub">${hist.map((h) => `${h.effective_from}부터 ${h.method === 'A' ? `A ${h.rate}%` : 'B'}`).join(' · ')}</p>` : ''}</section>`; }).join('');
+  return PageHead('페이백·마감', '페이백은 본사(브랜드)에 정산하는 금액입니다. 주문 시점의 기준이 주문마다 저장되므로, 기준을 바꿔도 지난 주문과 마감된 달은 바뀌지 않습니다. 송금은 자동으로 하지 않습니다.') +
+    `<div class="toolbar">${monthInput('settle-m', state.settleMonth, 'settleMonth', '정산 월')}${virtSeg()}<button class="btn secondary sm" data-act="csvsettle">CSV 내려받기</button><button class="btn secondary sm" data-act="nav" data-p="payouts">이체 기록으로 →</button></div>
+    <div class="tablewrap"><table class="tbl"><thead><tr><th>브랜드</th><th>방식</th><th class="r">정산 대상 매출</th><th class="r">페이백</th><th class="r">부가세</th><th class="r">합계</th><th>상태</th></tr></thead><tbody>${tbody}</tbody>
+      <tfoot><tr><td colspan="2">합계</td><td class="r">${fmtExact(tot.amount)}</td><td class="r">${fmtExact(tot.payback)}</td><td class="r">${fmtExact(tot.vat)}</td><td class="r">${fmtExact(tot.payback + tot.vat)}</td><td></td></tr></tfoot></table></div>
+    <p class="hint">반올림은 브랜드·월 정산 단위에서 원 미만 사사오입으로 한 번만 합니다. 부가세는 시트처럼 페이백의 10%를 따로 붙입니다.</p>
+    ${staffPaybackDetail(rows)}
+    <h2 class="section-title">브랜드별 정산 기준</h2><div class="minis">${brandRules}</div>`;
+}
+function staffPaybackDetail(rows) {
+  const ix = dbIndex(db);
+  return rows.filter((r) => r.rule && r.rule.method === 'B' && Object.values(r.boxes).some((v) => v)).map((r) => {
+    const perBoxOf = (pid) => { let last = null; for (const i of db.order_items) if (i.product_id === pid && (ix.orders.get(i.order_id) || {}).brand_id === r.brand_id) last = i.payback_per_box; return last; };
+    const lines = Object.entries(r.boxes).filter(([, v]) => v);
+    return `<details class="card"><summary class="b clickable">${esc(r.brand_name)} · ${monthLabel(state.settleMonth)} 품목별 계산</summary><div class="tablewrap"><table class="tbl"><thead><tr><th>품목</th><th class="r">박스</th><th class="r">박스당</th><th class="r">페이백</th></tr></thead><tbody>
+      ${lines.map(([pid, n]) => { const pb = perBoxOf(pid); const p = db.products.find((x) => x.id === pid); return `<tr><td>${esc(p ? p.name : pid)}</td><td class="r">${n}박스</td><td class="r">${pb == null ? '<span class="warntext">미정</span>' : fmtExact(pb)}</td><td class="r">${pb == null ? '-' : fmtExact(pb * n)}</td></tr>`; }).join('')}
+      </tbody><tfoot><tr><td colspan="3">페이백 합계</td><td class="r">${fmtExact(r.payback)}</td></tr></tfoot></table></div></details>`;
+  }).join('');
+}
+function ruleSheet(bid) {
+  const a = api(); const cur = a.currentPaybackRule(bid); const b = db.brands.find((x) => x.id === bid);
+  const method = state.modal.method || (cur ? cur.method : 'A');
+  const prods = db.products.filter((p) => !p.is_virtual);
+  return `<div class="sheet" role="dialog" aria-modal="true" aria-label="정산 기준"><div class="sheethead"><h2>${esc(b.name)} 정산 기준</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <form data-form="rule" class="stack"><input type="hidden" name="bid" value="${bid}">
+      <div class="opts"><label><input type="radio" name="method" value="A" ${method === 'A' ? 'checked' : ''} data-change="rulemethod"><span>방식 A · 매출 × 비율</span></label><label><input type="radio" name="method" value="B" ${method === 'B' ? 'checked' : ''} data-change="rulemethod"><span>방식 B · 품목별 박스당</span></label></div>
+      ${method === 'A' ? Field('rule-rate', 'rate', '계약 비율 (%)', 'inputmode="decimal" placeholder="예: 2.5"', cur && cur.method === 'A' ? cur.rate : '')
+      : `<div class="tablewrap"><table class="tbl"><thead><tr><th>품목</th><th class="r">박스당 금액 (원)</th></tr></thead><tbody>${prods.map((p) => `<tr><td>${esc(p.name)}</td><td class="r"><input class="sm-input right" name="pb_${p.id}" inputmode="numeric" value="${cur && cur.method === 'B' && cur.per_box[p.id] != null ? cur.per_box[p.id] : ''}" placeholder="미정" aria-label="${esc(p.name)} 박스당 금액"></td></tr>`).join('')}</tbody></table></div>`}
+      <div class="field"><label for="rule-from" class="label">적용 시작 월</label><input id="rule-from" type="month" name="from" value="${nowMonth()}"></div>
+      <p class="hint">시작 월 이후 들어오는 주문부터 적용됩니다. 이미 들어온 주문과 마감된 달은 그대로입니다.</p>
+      <button class="btn lg block" type="submit">기준 저장</button></form></div>`;
+}
+function staffApprovals(a) {
+  const pend = a.listMemberships('pending'); const done = a.listMemberships().filter((m) => m.status !== 'pending').slice(0, 20);
+  const rows = pend.map((m) => {
+    const stores = a.listStores(m.brand_id).filter((s) => !db.memberships.some((x) => x.store_id === s.id && x.status === 'approved'));
+    const fid = 'dec-' + m.id;
+    return `<tr><td class="nw num t13">${fmtDate(m.applied_at)}</td><td><b>${esc(m.info.store_name)}</b><div class="t13 sub">${esc(m.info.biz_no || '-')} · ${esc(m.info.ceo || '-')} · ${esc(m.info.phone || '-')}</div><div class="t13 sub">${esc(m.info.address || '')}</div></td>
+      <td class="nw">${esc(m.brand_name)}<div class="t13 sub mono">${esc(m.code || '')}</div></td><td>${StatusChip(MEMBER, 'pending')}</td>
+      <td><form id="${fid}" data-form="decide"><input type="hidden" name="mid" value="${m.id}"></form><div class="cell-actions">
+        <span class="selwrap"><select class="select line" name="store" form="${fid}" aria-label="연결할 매장"><option value="__new">신규 매장 (${esc(m.info.store_name)})</option>${stores.map((s) => `<option value="${s.id}">${esc(s.name)} (기존)</option>`).join('')}</select></span>
+        <input class="sm-input" name="reason" form="${fid}" placeholder="반려 사유" aria-label="반려 사유">
+        <button class="btn sm" name="do" value="approve" type="submit" form="${fid}">승인</button><button class="btn danger sm" name="do" value="reject" type="submit" form="${fid}">반려</button></div></td></tr>`;
+  }).join('');
+  return PageHead('가입 승인', '코드 입력은 소속 신청일 뿐입니다. 사업자 정보와 매장을 확인한 뒤 승인해야 가격이 열립니다. 관리자(브랜드 대표)는 승인할 수 없습니다.') +
+    (pend.length ? `<div class="tablewrap"><table class="tbl"><thead><tr><th>가입일</th><th>매장명</th><th>브랜드</th><th>상태</th><th>처리</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : EmptyState('대기 중인 신청이 없습니다', '로그인 화면의 "가입 코드로 신청"에서 시험해 볼 수 있습니다.')) +
+    (done.length ? `<h2 class="section-title">최근 처리</h2><div class="tablewrap"><table class="tbl"><thead><tr><th>처리일</th><th>매장명</th><th>브랜드</th><th>상태</th></tr></thead><tbody>${done.map((m) => `<tr><td class="nw num t13">${fmtDate(m.decided_at)}</td><td>${esc(m.store_name || m.info.store_name || '-')}</td><td>${esc(m.brand_name)}</td><td>${StatusChip(MEMBER, m.status)}</td></tr>`).join('')}</tbody></table></div>` : '');
+}
+function staffBrands(a) {
+  const brands = a.listBrands();
+  return PageHead('브랜드·초대코드', '브랜드는 여기서 추가만 하면 됩니다. 코드·가격·매출은 브랜드 id로 묶여 있어서 이름을 바꿔도 연결이 유지됩니다.') +
+    `<section class="card"><h2>브랜드 추가</h2><form data-form="addbrand" class="grid2">${Field('nb-name', 'name', '브랜드명')}${LIVE ? Field('nb-admin', 'admin', '관리자 이메일 (가입한 계정)', 'type="email" placeholder="비워두면 나중에 지정"') : Field('nb-admin', 'admin', '관리자(대표) 이름', 'placeholder="비워두면 나중에 연결"')}<div class="row align-end"><button class="btn" type="submit">추가하고 코드 발급</button></div></form></section>
+    ${brands.map((b) => `<section class="card"><div class="row between"><div><h2>${esc(b.name)}</h2><p class="t13 sub">관리자: ${b.admins.length ? b.admins.map(esc).join(', ') : '없음'} · 승인 매장 ${db.memberships.filter((m) => m.brand_id === b.id && m.status === 'approved').length}곳</p></div>
+      <div class="row"><form data-form="rename" class="row"><input type="hidden" name="bid" value="${b.id}"><input class="sm-input" name="name" aria-label="새 브랜드명" placeholder="새 이름"><button class="btn secondary sm" type="submit">이름 변경</button></form>${LIVE ? `<form data-form="assignadmin" class="row"><input type="hidden" name="bid" value="${b.id}"><input class="sm-input" name="email" type="email" required placeholder="관리자 이메일" aria-label="관리자로 지정할 이메일" style="width:180px"><button class="btn secondary sm" type="submit">관리자 지정</button></form>` : b.admins.length ? '' : `<button class="btn secondary sm" data-act="addadmin" data-b="${b.id}">관리자 계정 만들기</button>`}</div></div>
+      ${InviteCard(b.id, true)}</section>`).join('')}`;
+}
+/* ---------- CSV 내려받기 (엑셀에서 바로 열리게 BOM, 수식 주입 막기) ---------- */
+function downloadCsv(name, header, rows) {
+  const cell = (v) => { let s = String(v ?? ''); if (/^[=+\-@]/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const csv = '﻿' + [header, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+  try {
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const el = document.createElement('a'); el.href = url; el.download = name; document.body.appendChild(el); el.click(); el.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000); toast(`${name} 파일을 내려받았습니다.`);
+  } catch (e) { toast('이 브라우저에서는 파일을 내려받지 못했습니다. PC에서 다시 시도해 주세요.'); }
+}
+const csvStamp = () => kstDay(new Date().toISOString()).replace(/-/g, '');
+
+/* ---------- 주문·배송 (운영자) ---------- */
+const QUICK = [['', '전체', () => true], ['pending_payment', '결제 대기', (o) => o.status === 'pending_payment'], ['paid', '결제 확인', (o) => o.status === 'paid'],
+  ['preparing', '배송 준비', (o) => o.status === 'preparing'], ['shipped', '배송 중', (o) => o.status === 'shipped'], ['delivered', '배송 완료', (o) => o.status === 'delivered'],
+  ['cancel', '취소·환불', (o) => ['cancelled', 'refunded'].includes(o.status)]];
+function staffOrderList(a) {
+  const f = state.of; const base = a.listOrders({ brand_id: f.brand });
+  const q = (f.q || '').trim().toLowerCase();
+  const since = f.period ? new Date(Date.now() - Number(f.period) * 30 * 86400000).toISOString() : '';
+  const matchQ = (o) => !q || [o.no, o.store_name, o.brand_name, o.shipment && o.shipment.tracking_no, o.ship_to && o.ship_to.name, ...o.items.map((i) => `${i.product_name} ${i.option_name || ''}`)].some((v) => String(v || '').toLowerCase().includes(q));
+  const pre = base.filter((o) => (!since || o.created_at >= since) && matchQ(o));
+  const quick = QUICK.find((x) => x[0] === f.quick) || QUICK[0];
+  return { base, pre, list: pre.filter(quick[2]) };
+}
+function staffOrders(a) {
+  const f = state.of; const { pre, list } = staffOrderList(a);
+  const shown = list.slice(0, state.orderLimit); const brands = a.listBrands();
+  const sel = Object.keys(state.sel).filter((id) => list.some((o) => o.id === id));
+  const allOn = shown.length > 0 && shown.every((o) => state.sel[o.id]);
+  const count = (fn) => pre.filter(fn).length;
+  const short = [['pending_payment', '결제·입금 확인 대기'], ['paid', '배송 준비 대기'], ['preparing', '송장 미등록'], ['shipped', '배송 중']];
+  const actions = (o) => `<div class="cell-actions">
+      ${o.status === 'pending_payment' ? `<button class="btn sm" data-act="paid" data-o="${o.id}">${o.pay_method === 'card' ? '결제 확인' : '입금 확인'}</button><form data-form="discount" class="row"><input type="hidden" name="oid" value="${o.id}"><input class="sm-input narrow" name="amount" inputmode="numeric" placeholder="할인 금액" aria-label="할인 금액"><button class="btn secondary sm" type="submit">할인</button></form>` : ''}
+      ${o.status === 'paid' ? `<button class="btn secondary sm" data-act="prep1" data-o="${o.id}">배송 준비</button>` : ''}
+      ${['paid', 'preparing', 'shipped'].includes(o.status) ? `<form data-form="ship" class="row"><input type="hidden" name="oid" value="${o.id}"><input class="sm-input narrow" name="carrier" list="carriers" placeholder="택배사" aria-label="택배사" value="${esc(o.shipment ? o.shipment.carrier : '')}"><input class="sm-input" name="tracking" placeholder="송장번호" aria-label="송장번호" value="${esc(o.shipment ? o.shipment.tracking_no : '')}"><button class="btn sm" type="submit">${o.shipment ? '수정' : '송장 입력'}</button></form>` : ''}
+      ${o.status === 'shipped' ? `<button class="btn secondary sm" data-act="deliver" data-o="${o.id}">배송 완료</button>` : ''}
+      ${!['cancelled', 'refunded'].includes(o.status) ? `<button class="textbtn" data-act="askcancel" data-o="${o.id}">취소·환불</button>` : ''}</div>`;
+  return PageHead('주문·배송', '입금 확인 → 배송 준비 → 송장 입력(배송 중) → 배송 완료 순서로 처리합니다. 여러 건을 골라 한 번에 바꾸거나, 엑셀에서 송장을 붙여넣을 수 있습니다.', '',
+      `<div class="row"><button class="btn secondary sm" data-act="bulkship">송장 일괄 입력</button><button class="btn secondary sm" data-act="csvorders">CSV 내려받기</button></div>`) +
+    `<div class="kpis">${short.map(([k, l]) => `<button class="kpi ${f.quick === k ? 'on' : ''}" data-act="ofquick" data-v="${k}"><span class="label">${l}</span><b>${count((o) => o.status === k)}<small>건</small></b></button>`).join('')}</div>
+    <div class="cats" role="group" aria-label="주문 단계">${QUICK.map(([k, l, fn]) => `<button data-act="ofquick" data-v="${k}" aria-pressed="${(f.quick || '') === k}">${l}<span class="n">${count(fn)}</span></button>`).join('')}</div>
+    <form data-form="ofsearch" class="toolbar"><label class="search grow">${ICON.search}<input type="search" name="q" value="${esc(f.q || '')}" placeholder="주문번호 · 매장 · 상품 · 송장 · 받는 분" aria-label="주문 검색"></label>
+      ${Select('of-brand', 'ofbrand', [['', '전체 브랜드'], ...brands.map((b) => [b.id, b.name])], f.brand, '브랜드', 'line')}
+      ${Select('of-period', 'ofperiod', [['', '전체 기간'], ['1', '최근 1개월'], ['3', '최근 3개월']], f.period, '기간', 'line')}<button class="btn secondary sm" type="submit">조회</button>
+      ${f.q || f.brand || f.period || f.quick ? `<button type="button" class="textbtn" data-act="resetorders">초기화</button>` : ''}<span class="t13 sub">${list.length.toLocaleString('ko-KR')}건</span></form>
+    <datalist id="carriers">${(db.settings.carriers || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+    ${sel.length ? `<div class="bulkbar" role="region" aria-label="선택한 주문 처리"><b>${sel.length}건 선택</b><div class="row"><button class="btn sm" data-act="bulkst" data-v="paid">결제 확인</button><button class="btn sm" data-act="bulkst" data-v="preparing">배송 준비</button><button class="btn sm" data-act="bulkst" data-v="delivered">배송 완료</button><button class="btn secondary sm" data-act="bulkship">송장 일괄 입력</button><button class="textbtn" data-act="selclear">선택 해제</button></div></div>` : ''}
+    ${list.length ? `<div class="tablewrap"><table class="tbl rtable"><thead><tr><th class="ck"><label class="ckhit"><input type="checkbox" data-change="selall" ${allOn ? 'checked' : ''} aria-label="보이는 주문 모두 선택"></label></th><th>주문</th><th>매장</th><th>품목</th><th class="r">금액</th><th>상태</th><th>처리</th></tr></thead><tbody>
+    ${shown.map((o) => `<tr class="${state.sel[o.id] ? 'sel' : ''}"><td class="ck"><label class="ckhit"><input type="checkbox" data-change="selorder" data-o="${o.id}" ${state.sel[o.id] ? 'checked' : ''} aria-label="${esc(o.no)} 선택"></label></td>
+      <td class="nw" data-label="주문"><button class="olink num" data-act="staffopen" data-o="${o.id}">${esc(o.no)}</button><div class="t13 sub">${fmtDate(o.created_at)} · ${PAY[o.pay_method]}</div></td>
+      <td class="nw" data-label="매장">${esc(o.brand_name)}<div class="t13 sub">${esc(o.store_name)}${o.ship_to ? ` · ${esc(o.ship_to.name)}` : ''}</div></td>
+      <td class="t13" data-label="품목">${o.items.slice(0, 3).map((i) => `${esc(i.product_name)}${i.option_name ? `(${esc(i.option_name)})` : ''} ${i.qty_boxes}박스`).join('<br>')}${o.items.length > 3 ? `<br><span class="sub">외 ${o.items.length - 3}개 · 총 ${orderBoxes(o)}박스</span>` : ''}</td>
+      <td class="r" data-label="금액">${fmtExact(o.total)}${o.discount ? `<div class="t13 sub">할인 ${fmtExact(o.discount)}</div>` : ''}</td>
+      <td class="nw" data-label="상태">${OStatus(o)}${o.shipment ? `<div class="t13 mono">${esc(o.shipment.carrier)} ${esc(o.shipment.tracking_no)}</div>` : ''}${o.tax_invoice && o.tax_invoice.status !== 'issued' ? `<div>${Chip('세금계산서 ' + TAX[o.tax_invoice.status][0], TAX[o.tax_invoice.status][1])}</div>` : ''}</td>
+      <td data-label="처리">${actions(o)}</td></tr>`).join('')}
+    </tbody></table></div>${list.length > shown.length ? `<button class="btn secondary more" data-act="moreorders">${(list.length - shown.length).toLocaleString('ko-KR')}건 더 보기</button>` : ''}`
+    : EmptyState('조건에 맞는 주문이 없습니다', '', `<button class="btn secondary" data-act="resetorders">필터 초기화</button>`)}`;
+}
+function ordersCsv(a) {
+  const { list } = staffOrderList(a);
+  downloadCsv(`주문_${csvStamp()}.csv`, ['주문번호', '주문일시', '브랜드', '매장', '상태', '결제', '품목', '박스', '상품 금액', '배송비', '할인', '합계', '받는 분', '연락처', '주소', '택배사', '송장번호'],
+    list.map((o) => [o.no, fmtDate(o.created_at), o.brand_name, o.store_name, statusName(o), PAY[o.pay_method], o.items.map((i) => `${i.product_name}${i.option_name ? `(${i.option_name})` : ''} ${i.qty_boxes}박스`).join(' / '),
+      orderBoxes(o), o.items.reduce((s, i) => s + i.unit_price * i.qty_boxes, 0), o.shipping_fee || 0, o.discount || 0, o.total,
+      o.ship_to ? o.ship_to.name : '', o.ship_to ? o.ship_to.phone : '', o.ship_to ? `${o.ship_to.addr1} ${o.ship_to.addr2 || ''}`.trim() : '', o.shipment ? o.shipment.carrier : '', o.shipment ? o.shipment.tracking_no : '']));
+}
+/** 붙여넣은 송장 줄 읽기: 주문번호·택배사·송장번호 (택배사 칸이 없으면 공통 택배사) */
+function parseTracking(text, common) {
+  return String(text || '').split(/\r?\n/).map((ln) => ln.trim()).filter(Boolean).map((ln) => {
+    let parts = ln.split(/\t|,/).map((x) => x.trim()).filter(Boolean);
+    if (parts.length < 2) parts = ln.split(/\s+/);
+    if (parts.length === 2) return { no: parts[0], carrier: String(common || '').trim(), tracking_no: parts[1] };
+    return { no: parts[0], carrier: parts[1], tracking_no: parts.slice(2).join('') };
+  }).filter((r) => r.no && !/^주문/.test(r.no));
+}
+function reviewTracking(rows) {
+  const seen = {};
+  return rows.map((r) => {
+    const o = db.orders.find((x) => x.no === r.no && !x.is_virtual); const s = o && db.shipments.find((x) => x.order_id === o.id);
+    let err = '', warn = '', change = '';
+    if (!o) err = '주문번호를 찾을 수 없습니다';
+    else if (!['paid', 'preparing', 'shipped'].includes(o.status)) err = `${statusName(o)} 주문이라 넣을 수 없습니다`;
+    else if (!r.carrier || !r.tracking_no) err = '택배사와 송장번호를 모두 넣어 주세요';
+    if (!err) {
+      if (s && (s.carrier !== r.carrier || s.tracking_no !== r.tracking_no)) change = `${s.carrier} ${s.tracking_no} → 바뀜`;
+      else if (s) warn = '이미 같은 송장이 있습니다';
+      const dupOther = db.shipments.find((x) => x.tracking_no === r.tracking_no && (!o || x.order_id !== o.id));
+      if (dupOther || seen[r.tracking_no]) warn = '같은 송장번호가 다른 주문에도 있습니다';
+    }
+    seen[r.tracking_no] = true;
+    return { ...r, store: o ? ((dbIndex(db).stores.get(o.store_id) || {}).name || '') : '', err, warn, change };
+  });
+}
+function bulkShipSheet() {
+  const m = state.modal;
+  if (!m.rows) {
+    const pre = Object.keys(state.sel).map((id) => db.orders.find((o) => o.id === id)).filter((o) => o && ['paid', 'preparing', 'shipped'].includes(o.status)).map((o) => o.no);
+    return `<div class="sheet" role="dialog" aria-modal="true" aria-label="송장 일괄 입력"><div class="sheethead"><h2>송장 일괄 입력</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+      <form data-form="bulkparse" class="stack"><div class="field"><label class="label" for="bs-car">공통 택배사 (줄에 택배사가 없을 때)</label><input id="bs-car" name="carrier" list="carriers-bs" value="${esc(m.carrier || (db.settings.carriers || [])[0] || '')}" placeholder="예: CJ대한통운"></div>
+        <datalist id="carriers-bs">${(db.settings.carriers || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+        <div class="field"><label class="label" for="bs-text">엑셀에서 붙여넣기</label><textarea id="bs-text" name="text" rows="8" placeholder="주문번호 [탭] 택배사 [탭] 송장번호&#10;MO-261009-AB12	CJ대한통운	600011112222&#10;MO-261009-CD34	600011113333">${esc(m.text || (pre.length ? pre.map((n) => n + '\t').join('\n') : ''))}</textarea></div>
+        <p class="hint">엑셀에서 주문번호·택배사·송장번호 세 칸을 복사해 붙여넣으세요. 두 칸(주문번호·송장번호)이면 위 공통 택배사를 씁니다. 저장 전에 한 번 더 확인합니다.</p>
+        <button class="btn lg block" type="submit">검토하기</button></form></div>`;
+  }
+  const rows = reviewTracking(m.rows); const ok = rows.filter((r) => !r.err);
+  return `<div class="sheet" role="dialog" aria-modal="true" aria-label="송장 저장 전 검토"><div class="sheethead"><h2>저장 전 검토</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <p class="t13">${ok.length}건 저장 가능${rows.length - ok.length ? ` · <span class="warntext">${rows.length - ok.length}건 제외</span>` : ''}</p>
+    <div class="tablewrap"><table class="tbl"><thead><tr><th>주문번호</th><th>택배사 · 송장번호</th><th>확인</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr><td class="nw"><b class="num">${esc(r.no)}</b><div class="t13 sub">${esc(r.store)}</div></td><td class="t13">${esc(r.carrier)} ${esc(r.tracking_no)}</td>
+        <td class="t13">${r.err ? `<span class="warntext">✕ ${esc(r.err)}</span>` : r.change ? `변경 · <span class="sub">${esc(r.change)}</span>` : '새로 등록'}${r.warn ? `<div class="warntext">⚠ ${esc(r.warn)}</div>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="row end"><button class="btn secondary" data-act="bulkback">다시 붙여넣기</button><button class="btn" data-act="bulksave" ${ok.length ? '' : 'disabled'}>${ok.length}건 저장</button></div></div>`;
+}
+function orderViewSheet(oid) {
+  const a = api(); const o = guard(() => a.getOrder(oid)); if (!o || o.__error) return '';
+  return `<div class="sheet" role="dialog" aria-modal="true" aria-label="주문 상세"><div class="sheethead"><span class="label">주문 상세</span><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>${OrderDetail(a, o, true)}</div>`;
+}
+
+/* ---------- 세금계산서 (운영자) ---------- */
+function staffTax(a) {
+  const all = a.listTaxInvoices(); const f = state.taxFilter;
+  const F = [['requested', '발행 요청'], ['returned', '보완 요청'], ['issued', '발행 완료'], ['', '전체']];
+  const list = all.filter((t) => !f || t.status === f);
+  return PageHead('세금계산서', '가맹점이 계좌이체 주문에 신청한 내역입니다. 홈택스 등에서 직접 발행한 뒤 승인번호를 기록합니다. 앱이 국세청에 발행하지는 않습니다.') +
+    `<div class="cats" role="group" aria-label="세금계산서 상태">${F.map(([k, l]) => `<button data-act="taxfilter" data-v="${k}" aria-pressed="${f === k}">${l}<span class="n">${all.filter((t) => !k || t.status === k).length}</span></button>`).join('')}</div>
+    ${list.length ? `<div class="tablewrap"><table class="tbl rtable"><thead><tr><th>신청</th><th>받는 사업자</th><th class="r">금액</th><th>상태</th><th>처리</th></tr></thead><tbody>
+      ${list.map((t) => `<tr><td class="nw" data-label="신청"><button class="olink num" data-act="staffopen" data-o="${t.order_id}">${esc(t.order_no || '')}</button><div class="t13 sub">${fmtDateOnly(t.updated_at)} · ${esc(t.brand_name)} ${esc(t.store_name)}</div></td>
+        <td data-label="받는 사업자"><b>${esc(t.buyer.company)}</b><div class="t13 sub">${fmtBizNo(t.buyer.biz_no)} · ${esc(t.buyer.ceo)}${t.buyer.biz_type ? ` · ${esc(t.buyer.biz_type)}/${esc(t.buyer.biz_item || '')}` : ''}</div><div class="t13 sub">${esc(t.buyer.address)}${t.buyer.email ? ` · ${esc(t.buyer.email)}` : ''}</div></td>
+        <td class="r" data-label="금액">${fmtExact(t.order_total)}</td>
+        <td data-label="상태">${StatusChip(TAX, t.status)}${t.status === 'returned' ? `<div class="t13 sub">${esc(t.note || '')}</div>` : ''}${t.status === 'issued' ? `<div class="t13 mono">${esc(t.approval_no)}</div>` : ''}</td>
+        <td data-label="처리">${t.status === 'requested' ? `<div class="cell-actions"><button class="btn sm" data-act="taxissue" data-o="${t.order_id}">발행 기록</button>
+          <form data-form="taxreturn" class="row"><input type="hidden" name="oid" value="${t.order_id}"><input class="sm-input" name="note" placeholder="보완할 내용" aria-label="보완할 내용"><button class="btn secondary sm" type="submit">보완 요청</button></form></div>` : t.status === 'returned' ? '<span class="t13 sub">점주가 고치는 중</span>' : `<span class="t13 sub">${fmtDay(t.issued_date || '')}</span>`}</td></tr>`).join('')}
+    </tbody></table></div>` : EmptyState(f === 'requested' ? '처리할 신청이 없습니다' : '해당하는 내역이 없습니다', '')}`;
+}
+function taxIssueSheet(oid) {
+  const t = (api().listTaxInvoices() || []).find((x) => x.order_id === oid); if (!t) return '';
+  const supply = Math.round(t.order_total / 1.1);
+  return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="발행 기록"><div class="sheethead"><h2>발행 기록</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <p class="t13 sub">${esc(t.order_no || '')} · ${esc(t.buyer.company)} · 주문 금액 <b>${fmtExact(t.order_total)}</b></p>
+    <form data-form="taxissue" class="stack"><input type="hidden" name="oid" value="${oid}">
+      ${Field('ti-ap', 'approval', '승인번호 (24자리)', 'required autocomplete="off" placeholder="20261009-41000000-12345678"')}
+      <div class="grid2">${Field('ti-sup', 'supply', '공급가액 (원)', 'required inputmode="numeric"', supply)}${Field('ti-tax', 'tax', '세액 (원)', 'required inputmode="numeric"', t.order_total - supply)}</div>
+      ${Field('ti-date', 'date', '발행일', 'type="date" required', kstDay(new Date().toISOString()))}
+      <p class="hint">공급가액과 세액의 합은 주문 금액과 같아야 합니다. 기록하면 점주 화면에 승인번호가 보입니다.</p>
+      <button class="btn lg block" type="submit">발행 완료로 기록</button></form></div>`;
+}
+
+/* ---------- 페이백 지급: 수취계좌 → 지급할 달 → 이체 기록 ---------- */
+function staffPayouts(a) {
+  const brands = a.listBrands(); if (!brands.some((b) => b.id === state.payBrand) && brands[0]) state.payBrand = brands[0].id;
+  const bid = state.payBrand; const b = brands.find((x) => x.id === bid); if (!b) return PageHead('페이백 지급', '') + EmptyState('브랜드가 없습니다', '');
+  const acc = a.getBrandAccount(bid); const paid = a.listPayouts(); const mine = paid.filter((p) => p.brand_id === bid);
+  const months = []; for (let k = 1; k <= 6; k++) months.push(addMonths(nowMonth(), -k));
+  const rows = months.map((m) => ({ m, r: a.settlement(m, false).find((x) => x.brand_id === bid), p: mine.find((x) => x.month === m) }));
+  const pick = rows.find((x) => x.m === state.payMonth && x.r.closed && !x.p && x.r.payback + x.r.payback_vat > 0);
+  const lastPaid = mine[0];
+  const adj = lastPaid ? rows.filter((x) => x.m > lastPaid.month && x.r.adjustments) : [];
+  const nowLocal = (() => { const p = kstParts(new Date().toISOString()); return `${p.y}-${pad2(p.m)}-${pad2(p.d)}T${pad2(p.hh)}:${pad2(p.mi)}`; })();
+  return PageHead('페이백 지급', '금액 확인 → 은행에서 직접 이체 → 이체 완료 기록. 앱은 송금하지 않습니다. 마감한 달의 고정된 금액만 기록할 수 있고, 기록은 고칠 수 없습니다.') +
+    `<div class="toolbar">${Select('pay-brand', 'paybrand', brands.map((x) => [x.id, x.name]), bid, '브랜드', 'line')}</div>
+    <div class="steps3">
+    <section class="card"><span class="stepno">1</span><h2>본사 수취계좌</h2>
+      <form data-form="account" class="stack"><input type="hidden" name="bid" value="${bid}"><div class="grid2">${Field('ac-bank', 'bank', '은행', 'required placeholder="예: 국민"', acc ? acc.bank : '')}${Field('ac-no', 'account_no', '계좌번호', 'required inputmode="numeric"', acc ? acc.account_no : '')}${Field('ac-holder', 'holder', '예금주', 'required', acc ? acc.holder : '')}</div>
+      <div class="row between"><span class="t13 sub">${acc ? `${fmtDateOnly(acc.updated_at)} 저장 · 브랜드 관리자도 볼 수 있습니다` : '아직 등록하지 않았습니다'}</span><button class="btn secondary sm" type="submit">${acc ? '계좌 수정' : '계좌 저장'}</button></div></form></section>
+    <section class="card"><span class="stepno">2</span><h2>지급할 달 고르기</h2>
+      <div class="tablewrap"><table class="tbl"><thead><tr><th>월</th><th class="r">페이백</th><th class="r">부가세</th><th class="r">합계</th><th>상태</th></tr></thead><tbody>
+      ${rows.map(({ m, r, p }) => { const tot = r.payback + r.payback_vat;
+        return `<tr class="${pick && pick.m === m ? 'sel' : ''}"><td class="nw">${monthLabel(m)}${r.adjustments ? `<div class="t13 sub">반품 조정 ${fmtExact(r.adjustments)}</div>` : ''}</td><td class="r">${fmtExact(r.payback)}</td><td class="r">${fmtExact(r.payback_vat)}</td><td class="r b">${fmtExact(tot)}</td>
+        <td class="nw">${p ? `${Chip('이체 완료', 'st-ship')}<div class="t13 sub">${fmtDateOnly(p.transferred_at)}</div>` : !r.closed ? (tot ? `<button class="textbtn" data-act="nav" data-p="payback">마감 전 · 마감하러 가기</button>` : '<span class="t13 sub">대상 없음</span>') : tot > 0 ? `<button class="btn ${pick && pick.m === m ? '' : 'secondary'} sm" data-act="paymonth" data-v="${m}">${pick && pick.m === m ? '선택됨' : '이 달 선택'}</button>` : '<span class="t13 sub">지급할 금액 없음</span>'}</td></tr>`; }).join('')}
+      </tbody></table></div>
+      ${adj.length ? `<p class="note warn">지급 후 반품 조정: ${adj.map((x) => `${monthLabel(x.m)} ${fmtExact(x.r.adjustments)}`).join(', ')} — 해당 달 페이백에 이미 반영되어 있습니다.</p>` : ''}</section>
+    <section class="card"><span class="stepno">3</span><h2>이체 기록</h2>
+      ${!acc ? '<p class="t13 sub">먼저 1번에서 수취계좌를 저장해 주세요.</p>' : !pick ? '<p class="t13 sub">2번에서 지급할 달을 골라 주세요.</p>'
+        : `<div class="payline"><span class="sub">${esc(b.name)} · ${monthLabel(pick.m)}</span><b class="num">${fmtExact(pick.r.payback + pick.r.payback_vat)}</b><span class="t13 sub">→ ${esc(acc.bank)} ${esc(acc.account_no)} (${esc(acc.holder)})</span></div>
+        <form data-form="payout" class="stack"><input type="hidden" name="bid" value="${bid}"><input type="hidden" name="month" value="${pick.m}">
+          <div class="grid2">${Field('po-at', 'at', '이체한 시각 (한국 시간)', 'type="datetime-local" required', nowLocal)}${Field('po-ref', 'ref', '은행 거래번호 (선택)', 'autocomplete="off"')}</div>
+          ${Field('po-memo', 'memo', '메모 (선택)')}<p class="hint">은행 앱에서 이체를 마친 뒤 기록하세요. 기록은 고칠 수 없고, 이후 반품은 다음 달 정산에서 조정됩니다.</p>
+          <button class="btn lg block" type="submit">이체 완료 기록</button></form>`}</section></div>
+    ${paid.length ? `<h2 class="section-title">이체 기록</h2>${PayoutTable(paid, true)}` : ''}`;
+}
+const PayoutTable = (list, withBrand) => `<div class="tablewrap"><table class="tbl"><thead><tr>${withBrand ? '<th>브랜드</th>' : ''}<th>정산 월</th><th class="r">금액 (부가세 포함)</th><th>받은 계좌</th><th>이체 시각</th><th>거래번호 · 메모</th></tr></thead><tbody>
+  ${list.map((p) => `<tr>${withBrand ? `<td class="nw b">${esc(p.brand_name)}</td>` : ''}<td class="nw">${monthLabel(p.month)}</td><td class="r b">${fmtExact(p.total)}</td><td class="t13">${esc(p.account.bank)} ${esc(p.account.account_no)}<div class="t13 sub">${esc(p.account.holder)}</div></td>
+    <td class="nw num t13">${fmtDate(p.transferred_at)}</td><td class="t13">${esc(p.transfer_ref || '-')}${p.memo ? `<div class="t13 sub">${esc(p.memo)}</div>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
+
+function staffNotices(a) {
+  const ns = a.listNotices(); const brands = a.listBrands(); const stores = a.listStores();
+  const bn = (id) => (db.brands.find((b) => b.id === id) || {}).name;
+  const tgt = (n) => n.target === 'all' ? '전체' : n.target === 'brand' ? bn(n.brand_id) : `${bn(n.brand_id)} · ${(db.stores.find((s) => s.id === n.store_id) || {}).name}`;
+  return PageHead('공지', '전체, 브랜드, 매장 단위로 보낼 수 있습니다. 대상이 아닌 점주에게는 보이지 않습니다. 점주 화면에서는 가장 최근 공지가 상단 공지 바에 뜹니다.') +
+    `<section class="card"><h2>새 공지</h2><form data-form="notice" class="stack">
+      <div class="grid2">${FieldSelect('nt-target', 'target', [['all', '전체 가맹점'], ['brand', '브랜드'], ['store', '매장 한 곳']], 'all', '대상')}
+      ${FieldSelect('nt-brand', 'brand_id', [['', '선택'], ...brands.map((b) => [b.id, b.name])], '', '브랜드')}
+      ${FieldSelect('nt-store', 'store_id', [['', '선택'], ...stores.map((s) => [s.id, `${bn(s.brand_id)} · ${s.name}`])], '', '매장')}</div>
+      ${Field('nt-title', 'title', '제목')}<div class="field"><label for="nt-body" class="label">내용</label><textarea id="nt-body" name="body"></textarea></div>
+      <div class="field"><label for="nt-img" class="label">이미지 (선택)</label><input id="nt-img" name="image" type="file" accept="image/*"></div><div class="row end"><button class="btn" type="submit">공지 올리기</button></div></form></section>
+    ${ns.length ? `<div class="tablewrap"><table class="tbl"><thead><tr><th>날짜</th><th>대상</th><th>제목</th><th></th></tr></thead><tbody>${ns.map((n) => `<tr><td class="nw num t13">${fmtDateOnly(n.created_at)}</td><td class="nw t13">${esc(tgt(n))}</td><td><b>${esc(n.title)}</b>${n.image ? ` <span class="t13 sub">· 이미지</span>` : ''}</td><td class="r"><button class="textbtn" data-act="delnotice" data-n="${n.id}">삭제</button></td></tr>`).join('')}</tbody></table></div>` : ''}`;
+}
+function staffProducts(a) {
+  const prods = a.listProducts(); const cats = a.listCategories();
+  return PageHead('상품·옵션', '상품 정보는 브랜드와 상관없이 하나로 관리하고, 가격은 브랜드별로 따로 넣습니다. 주문 수량은 항상 박스로 저장되고 입수량은 안내용입니다.', '', `<button class="btn" data-act="editp" data-p="">상품 추가</button>`) +
+    `<div class="tablewrap"><table class="tbl"><thead><tr><th></th><th>상품</th><th>품목</th><th class="r">입수량</th><th>옵션</th><th>판매</th><th></th></tr></thead><tbody>
+    ${prods.map((p) => `<tr><td class="thumbcell">${Thumb(p)}</td><td class="b">${esc(p.name)}${p.code ? `<div class="t13 sub">${esc(p.code)}</div>` : ''}</td><td class="nw">${esc((cats.find((c) => c.id === p.category_id) || {}).name || '')}</td><td class="r">${p.pack_qty ? p.pack_qty.toLocaleString('ko-KR') + '개' : '<span class="warntext">미등록</span>'}</td>
+      <td class="t13">${p.options.length ? `<div class="row">${p.options.map((o) => Chip(o.name)).join('')}</div>` : '<span class="sub">없음</span>'}</td><td>${p.active ? Chip('판매', 'st-done') : Chip('중지', 'st-wait')}</td><td class="r"><button class="btn secondary sm" data-act="editp" data-p="${p.id}">수정</button></td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+function productEditSheet(pid) {
+  const a = api(); const base = pid ? a.listProducts().find((x) => x.id === pid) : { name: '', category_id: db.categories[0].id, pack_qty: null, active: true, options: [] };
+  const p = { ...base, ...(state.modal.draft || {}) };
+  const img = state.modal.image !== undefined ? state.modal.image : base.image || null;
+  const prices = pid ? db.brands.map((b) => [b, priceAt(db, b.id, pid, new Date().toISOString())]) : [];
+  return `<div class="sheet" role="dialog" aria-modal="true" aria-label="상품 편집"><div class="sheethead"><h2>${pid ? '상품 수정' : '상품 추가'}</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+    <form data-form="product" class="stack"><input type="hidden" name="id" value="${pid || ''}">
+      <section class="formsec"><h3>기본 정보</h3><div class="grid2">${Field('pe-name', 'name', '상품명', '', p.name)}${Field('pe-code', 'code', '상품코드 (선택)', 'placeholder="예: 00020"', p.code || '')}</div>
+        <div class="grid2">${FieldSelect('pe-cat', 'category_id', db.categories.map((c) => [c.id, c.name]), p.category_id, '품목')}<label class="check align-end"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}> 판매 중</label></div></section>
+      <section class="formsec"><h3>입수량</h3>${Field('pe-pack', 'pack_qty', '박스당 입수량 (개)', 'inputmode="numeric" placeholder="미등록"', p.pack_qty ?? '')}</section>
+      <section class="formsec"><h3>옵션 목록</h3><div id="opt-rows" class="optlist">${p.options.map((o, i) => optRow(o, i)).join('')}</div>
+        <button type="button" class="btn secondary sm start" data-act="addopt">옵션 추가</button></section>
+      <section class="formsec"><h3>이미지</h3><div class="imgedit"><div class="pthumb">${img ? `<img src="${img}" alt="">` : productArt(base.img || 'box')}</div>
+        <div class="stack s2"><input type="file" accept="image/*" id="pe-img" data-change="pimg" aria-label="상품 이미지 올리기">${img ? `<button type="button" class="textbtn start" data-act="pimgdel">이미지 지우기</button>` : '<span class="hint">없으면 기본 그림이 보입니다. 같은 배경 박스 안에 맞춰 보입니다.</span>'}</div></div></section>
+      ${pid ? `<section class="formsec"><h3>브랜드별 가격</h3><div class="tablewrap"><table class="tbl"><tbody>${prices.map(([b, pr]) => `<tr><td>${esc(b.name)}</td><td class="r">${pr ? fmtExact(pr.price) : '<span class="sub">미등록</span>'}</td></tr>`).join('')}</tbody></table></div><p class="hint">가격은 "브랜드 단가" 메뉴에서 적용 시작일과 함께 바꿉니다.</p></section>` : ''}
+      <button class="btn lg block" type="submit">저장</button></form></div>`;
+}
+const optRow = (o = {}, i = 0) => `<div class="optrow"><span class="n">${i + 1}</span><input class="input" data-oid="${o.id || ''}" value="${esc(o.name || '')}" placeholder="예: 흑색" aria-label="옵션 이름"><button type="button" class="btn secondary sm" data-act="delopt">삭제</button></div>`;
+function staffPrices(a) {
+  const brands = a.listBrands(); if (!brands.some((b) => b.id === state.priceBrand) && brands[0]) state.priceBrand = brands[0].id;
+  const bid = state.priceBrand; const prods = a.listProducts(bid);
+  const today = kstDay(new Date().toISOString());
+  return PageHead('브랜드 단가', '같은 상품도 브랜드마다 계약 단가가 다릅니다. 새 단가는 적용 시작일부터 새 주문에만 쓰이고, 지난 주문은 주문 당시 단가로 남습니다.') +
+    `<div class="toolbar">${Select('pr-brand', 'pricebrand', brands.map((b) => [b.id, b.name]), bid, '브랜드', 'line')}
+      <form data-form="copyprices" class="row"><span class="t13 sub">다른 브랜드 단가 복사</span><span class="selwrap"><select name="from" class="select line" aria-label="복사할 브랜드">${brands.filter((b) => b.id !== bid).map((b) => `<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></span><input class="sm-input date" type="date" name="from_date" value="${today}" aria-label="적용 시작일"><button class="btn secondary sm" type="submit">복사</button></form></div>
+    <div class="tablewrap"><table class="tbl"><thead><tr><th>상품</th><th class="r">현재 단가</th><th>적용 시작</th><th>새 단가</th></tr></thead><tbody>
+    ${prods.map((p) => `<tr><td>${esc(p.name)}</td><td class="r">${p.price ? fmtExact(p.price.price) : '<span class="sub">미등록</span>'}</td><td class="nw num t13">${p.price ? fmtDay(p.price.effective_from) : '-'}</td>
+      <td><form data-form="price" class="row nowrap"><input type="hidden" name="pid" value="${p.id}"><input class="sm-input" name="price" inputmode="numeric" placeholder="원" aria-label="${esc(p.name)} 새 단가"><input class="sm-input date" type="date" name="from" value="${today}" aria-label="적용 시작일"><button class="btn sm" type="submit">저장</button></form></td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+function staffSettings(a) {
+  const s = a.getSettings(); const f = s.footer || FOOTER_DEFAULT;
+  return PageHead('운영 설정', '매출 집계 기준은 여기 한 곳에서만 바꿉니다. 바꾸면 열려 있는 달만 다시 계산되고, 마감된 달은 그대로입니다.') +
+    `<form data-form="settings" class="stack s6"><section class="card"><h2>매출 집계</h2>
+      <div class="grid2">${FieldSelect('st-basis', 'basis', Object.entries(BASIS_LABEL), s.revenue.basis, '집계 시점 · 미정, 추천값 적용 중')}${Field('st-ship', 'shipping_fee', '배송비 (주문당, 원) · 미정', 'inputmode="numeric"', s.shipping_fee)}${Field('st-free', 'free_shipping_over', '무료배송 기준 (원, 0이면 없음)', 'inputmode="numeric"', s.free_shipping_over || 0)}</div>
+      <label class="check"><input type="checkbox" name="include_shipping" ${s.revenue.include_shipping ? 'checked' : ''}> 배송비를 정산 대상 매출에 포함</label>
+      <label class="check"><input type="checkbox" name="include_discount" ${s.revenue.include_discount ? 'checked' : ''}> 할인 금액을 빼고 정산</label>
+      <label class="check"><input type="checkbox" name="price_includes_vat" ${s.revenue.price_includes_vat ? 'checked' : ''}> 계약 단가에 부가세가 포함되어 있음 (확인 필요)</label>
+      <label class="check"><input type="checkbox" name="payback_vat" ${s.payback_vat ? 'checked' : ''}> 페이백에 부가세 10%를 따로 붙여 표시 (7월 시트 방식)</label></section>
+    <section class="card"><h2>주문·가입 접수</h2>
+      <label class="check"><input type="checkbox" name="order_open" ${s.order_open !== false ? 'checked' : ''}> 주문 접수 중 (끄면 점주 화면에 '주문 접수를 잠시 멈췄습니다'가 뜨고 주문이 막힙니다)</label>
+      <label class="check"><input type="checkbox" name="signup_open" ${s.signup_open !== false ? 'checked' : ''}> 가입 신청 받는 중 (끄면 초대코드가 있어도 신청이 막힙니다)</label></section>
+    <section class="card"><h2>주문·가입</h2><div class="grid2">${Field('st-site', 'site_url', '공용 사이트 주소', 'placeholder="배포 후 입력"', s.site_url)}${Field('st-bank', 'bank_account', '계좌이체 입금 계좌', 'placeholder="은행 · 계좌번호 · 예금주"', s.bank_account)}${Field('st-car', 'carriers', '택배사 (쉼표로 구분)', 'placeholder="나중에 입력"', (s.carriers || []).join(', '))}</div>
+      <p class="hint">초대코드는 발급 후 24시간 동안만 쓸 수 있습니다. 가입 신청 때 상호, 사업자번호, 대표자명, 연락처, 매장 주소를 받습니다.</p></section>
+    <section class="card"><h2>푸터 (운영사 정보)</h2><div class="grid2">${Field('ft-co', 'f_company', '운영사', '', f.company)}${Field('ft-ceo', 'f_ceo', '대표자', '', f.ceo)}${Field('ft-biz', 'f_biz_no', '사업자등록번호', '', f.biz_no)}${Field('ft-addr', 'f_address', '주소', '', f.address)}${Field('ft-contact', 'f_contact', '문의처', 'placeholder="전화·이메일·카카오톡 채널"', f.contact)}</div>
+      <div class="field"><label for="ft-ship" class="label">배송 안내 (주문서·푸터에 보임)</label><textarea id="ft-ship" name="f_shipping_info" placeholder="예: 평일 오후 2시 이전 결제 확인 건은 당일 출고합니다.">${esc(f.shipping_info || '')}</textarea></div>
+      <div class="field"><label for="ft-ret" class="label">교환·반품 안내</label><textarea id="ft-ret" name="f_return_info" placeholder="예: 받은 날부터 7일 안에 미개봉 박스만 교환·반품할 수 있습니다.">${esc(f.return_info || '')}</textarea></div>
+      <div class="field"><label for="ft-terms" class="label">이용약관</label><textarea id="ft-terms" name="f_terms">${esc(f.terms)}</textarea></div>
+      <div class="field"><label for="ft-privacy" class="label">개인정보처리방침</label><textarea id="ft-privacy" name="f_privacy">${esc(f.privacy)}</textarea></div></section>
+    <div class="row end"><button class="btn lg" type="submit">설정 저장</button></div></form>`;
+}
+function staffQA(a) {
+  if (a.me().role !== 'developer') return Denied(new ApiError('FORBIDDEN', '검수 화면은 개발자만 엽니다.'));
+  const res = state.qa || (state.qa = runQA());
+  const pass = res.filter((r) => r.ok).length;
+  return PageHead('검수', '깨끗한 시험 데이터를 따로 만들어 다섯 계정의 권한으로 직접 호출해 확인합니다. 지금 보고 있는 데이터는 건드리지 않습니다.', '', `<button class="btn secondary sm" data-act="runqa">다시 실행</button>`) +
+    `<div>${Chip(`${pass} / ${res.length} 통과`, pass === res.length ? 'st-done' : 'st-err')}</div>
+    <div class="qa">${res.map((r) => `<div class="it"><span>${Chip(r.ok ? '통과' : '실패', r.ok ? 'st-done' : 'st-err')}<div class="t13 sub mono">${r.id}</div></span><div><b>${esc(r.title)}</b><span class="t13 sub">${esc(r.detail)}</span></div></div>`).join('')}</div>
+    <p class="hint">화면 확인은 로그아웃 후 다섯 시험 계정으로 각각 들어가서 해 주세요. 상위 계정 하나로만 보면 권한 누수를 놓칩니다.</p>`;
+}
+function staffDesign() {
+  const t = (rows) => `<div class="tablewrap"><table class="tbl"><thead><tr><th>기능</th><th>개발자</th><th>운영자</th><th>관리자</th><th>가맹점주</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${r[0]}</td>${r.slice(1).map((c) => `<td class="t13">${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const rel = [['brands', '브랜드', 'invite_codes · stores · brand_prices · payback_rules · monthly_closings'], ['users', '계정 (developer / operator / admin / owner)', 'admin은 brand_id 하나에 묶임'],
+    ['memberships', '가입 신청 (pending / approved / rejected)', 'users × brands, 승인 시 stores 연결'], ['invite_codes', '초대코드 (24시간 만료)', 'brands'], ['stores', '가맹점', 'brands'],
+    ['categories · products · product_options', '품목 · 상품(이미지 포함) · 옵션(여러 개)', 'products는 브랜드 공통'], ['brand_prices', '브랜드별 계약 단가 (effective_from)', 'brands × products'],
+    ['orders · order_items', '주문 · 주문 품목 (박스 수, 단가·입수량·옵션·페이백 스냅샷)', 'stores, brands'], ['shipments · refunds', '송장 · 취소/환불 (마감월이면 조정 월 기록)', 'orders'], ['order_events', '처리 이력 (접수·결제 확인·배송 준비·송장·배송 완료)', 'orders'], ['tax_invoices', '세금계산서 신청·보완·발행 기록 (승인번호)', 'orders, stores'],
+    ['brand_accounts · payback_payouts', '브랜드 수취계좌 · 페이백 이체 기록 (마감월 스냅샷, 수정 불가)', 'brands × 월'],
+    ['notices', '공지 (전체 / 브랜드 / 매장)', 'brands, stores'], ['payback_rules', '정산 기준 (방식 A 비율 / B 품목별 박스당, 시작 월)', 'brands'], ['monthly_closings', '월 마감 스냅샷', 'brands × 월'], ['audit_logs', '누가·언제·무엇', 'users']];
+  return PageHead('설계 문서', '권한표, 데이터 구조, 아직 정하지 않은 항목입니다.') +
+    `<section class="card"><h2>역할 × 기능 권한</h2>${t([
+      ['브랜드 추가·이름 변경', '●', '●', '–', '–'], ['상품·옵션·이미지·가격', '●', '●', '–', '–'], ['가입 승인·반려', '●', '●', '–', '–'], ['송장·입금 확인·취소', '●', '●', '–', '–'],
+      ['송장 일괄 입력·주문 단계 일괄 변경·CSV', '●', '●', '–', '–'], ['세금계산서 보완 요청·발행 기록', '●', '●', '–', '–'], ['세금계산서 신청 (계좌이체 주문)', '–', '–', '–', '● 자기 매장'],
+      ['페이백 수취계좌·이체 기록', '●', '●', '● 자기 브랜드 보기만', '–'], ['주문서(배송지)·입금 전 주문 취소·다시 담기', '–', '–', '–', '● 자기 매장'],
+      ['공지 작성', '●', '●', '–', '–'], ['페이백 기준·월 마감', '●', '●', '–', '–'], ['초대코드 확인·공유', '● 전체', '● 전체', '● 자기 브랜드', '–'],
+      ['초대코드 새로 발급', '● 전체', '● 전체', '● 자기 브랜드', '–'], ['매출 그래프 1~4개월', '● 전체·브랜드별', '● 전체·브랜드별', '● 자기 브랜드', '–'],
+      ['품목별 박스 수량', '●', '●', '–', '–'], ['상품 조회·주문', '–', '–', '–', '● 자기 브랜드 (승인 후)'], ['주문·배송·공지 조회', '● 전체', '● 전체', '–', '● 자기 매장'],
+      ['푸터·약관 설정', '●', '●', '–', '–'], ['서버·배포·보안 설정', '●', '–', '–', '–'], ['검수 실행', '●', '–', '–', '–']])}</section>
+    <section class="card"><h2>데이터 구조</h2><div class="tablewrap"><table class="tbl"><thead><tr><th>테이블</th><th>내용</th><th>연결</th></tr></thead><tbody>${rel.map(([x, y, z]) => `<tr><td class="b mono t13">${x}</td><td class="t13">${y}</td><td class="t13 sub">${z}</td></tr>`).join('')}</tbody></table></div></section>
+    <section class="card"><h2>아직 정하지 않은 항목 (추천 기본값 적용 중)</h2><div class="tablewrap"><table class="tbl"><thead><tr><th>항목</th><th>지금 적용한 값</th></tr></thead><tbody>
+      <tr><td>매출 집계 시점</td><td>결제 완료 (계좌이체는 입금 확인 시점)</td></tr><tr><td>계약 단가의 부가세 포함 여부</td><td>포함된 금액으로 봄</td></tr>
+      <tr><td>배송비 금액</td><td>0원</td></tr><tr><td>박스당 입수량</td><td>모든 상품 미등록</td></tr><tr><td>시트의 SET = 박스?</td><td>같은 단위로 봄</td></tr>
+      <tr><td>175Ø 몸통만·175Ø 뚜껑 박스당 페이백</td><td>미정 (계산에서 제외하고 표시)</td></tr><tr><td>고기육점·파스타여기요·빕스·애슐리 단가·정산 기준</td><td>미등록 (점주에게 상품이 안 보임)</td></tr>
+      <tr><td>택배사 목록 · 입금 계좌 · 사이트 주소 · 운영사 정보</td><td>비어 있음 (운영 설정에서 입력)</td></tr></tbody></table></div></section>`;
+}
+function staffDev(a) {
+  const d = a.getDevSettings();
+  return PageHead('개발자 설정', '서버·배포·보안 설정은 개발자만 보고 바꿀 수 있습니다.') +
+    `<form data-form="dev" class="card"><div class="grid2">${Field('dv-target', 'deploy_target', '배포 대상', '', d.deploy_target)}${Field('dv-sess', 'session_hours', '로그인 유지 시간 (시간)', 'inputmode="numeric"', d.session_hours)}${Field('dv-ip', 'allowed_admin_ips', '운영 화면 허용 IP', 'placeholder="비우면 제한 없음"', d.allowed_admin_ips)}</div><div class="row end"><button class="btn" type="submit">저장</button></div></form>
+    ${LIVE ? `<section class="card"><h2>운영자·개발자 지정</h2><p class="hint">먼저 그 사람이 가입(또는 Supabase에서 계정 생성)을 해야 합니다. 관리자(브랜드 대표)는 "브랜드·초대코드"에서 지정합니다.</p>
+      <form data-form="setrole" class="grid2">${Field('sr-email', 'email', '이메일', 'type="email" required')}${FieldSelect('sr-role', 'role', [['operator', '운영자'], ['developer', '개발자'], ['owner', '가맹점주 (권한 해제)']], 'operator', '역할')}<div class="row align-end"><button class="btn" type="submit">지정</button></div></form></section>
+      <section class="card"><h2>서버</h2><p class="hint">Supabase 프로젝트 moa-store (서울) · 권한은 서버 규칙(RLS)이 막습니다.</p></section>`
+    : `<section class="card"><h2>시제품 데이터</h2><p class="hint">이 시제품의 데이터는 지금 쓰는 브라우저에만 저장됩니다. 처음 상태(7월 시트 + 가상 데이터)로 되돌릴 수 있습니다.</p><div class="row"><button class="btn danger" data-act="askreset">처음 상태로 되돌리기</button></div></section>`}`;
+}
+
+/* ---------- 시트 ---------- */
+const confirmSheet = () => { const c = state.confirm; return `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="확인"><h2>${esc(c.title)}</h2><p>${esc(c.text)}</p><div class="row end"><button class="btn secondary" data-act="close">그만두기</button><button class="btn" data-act="doconfirm">${esc(c.ok)}</button></div></div>`; };
+const LEGAL = { terms: ['이용약관', 'terms'], privacy: ['개인정보처리방침', 'privacy'], shipping: ['배송 안내', 'shipping_info'], returns: ['교환·반품 안내', 'return_info'] };
+const legalSheet = (which) => { const f = api().publicInfo().footer; const [title, key] = LEGAL[which] || LEGAL.terms; const body = f[key];
+  return `<div class="sheet" role="dialog" aria-modal="true" aria-label="${title}"><div class="sheethead"><h2>${title}</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>${body ? `<div class="legal">${esc(body)}</div>` : EmptyState('아직 등록되지 않았습니다', '운영자가 운영 설정에서 내용을 넣으면 여기에 보입니다.')}</div>`; };
+
+const PwFields = (prefix) => `${Field(prefix + '-pw', 'pw', '새 비밀번호 (8자 이상)', 'type="password" required minlength="8" autocomplete="new-password"')}${Field(prefix + '-pw2', 'pw2', '새 비밀번호 한 번 더', 'type="password" required minlength="6" autocomplete="new-password"')}`;
+const passwordSheet = () => `<div class="sheet narrow" role="dialog" aria-modal="true" aria-label="비밀번호 변경"><div class="sheethead"><h2>비밀번호 변경</h2><button class="iconbtn" data-act="close" aria-label="닫기">×</button></div>
+  <form data-form="pwchange" class="stack">${PwFields('pc')}<button class="btn lg block" type="submit">바꾸기</button></form></div>`;
+// 비밀번호 최소 길이: Supabase 인증 설정(최소 8자, 2026-10-10)과 같게 (기준서 S-07)
+const PW_MIN = 8;
+const pwCheck = (f) => { if (String(f.pw || '').length < PW_MIN) { toast(`비밀번호는 ${PW_MIN}자 이상으로 정해 주세요.`); return false; } if (f.pw !== f.pw2) { toast('두 번 넣은 비밀번호가 다릅니다.'); return false; } return true; };
+
+/* ---------- 렌더 ---------- */
+function render() {
+  const app = document.getElementById('app');
+  for (const k in charts) delete charts[k];
+  if (LIVE && state.liveView !== 'app') { app.innerHTML = state.liveView === 'boot' ? LoadingScreen() : renderLiveLogin(); document.body.style.overflow = ''; return; }
+  const me = makeApi(db, state.uid).me();
+  if (state.uid && !me.user) state.uid = null;
+  let page = state.page;
+  let html;
+  if (!state.uid) html = renderLogin();
+  else if (me.role === 'owner') { if (!NAV.owner.includes(page)) page = 'shop'; html = renderOwner(page); }
+  else if (me.role === 'admin') { if (!NAV.admin.includes(page)) page = 'home'; html = renderAdmin(page); }
+  else { if (!page || !PAGE_LABEL[page] || NAV.owner.includes(page)) page = 'home'; html = renderStaff(page); }
+  if (state.modal) {
+    const m = state.modal;
+    const SHEETS = { product: () => productSheet(m.pid), editp: () => productEditSheet(m.pid), rule: () => ruleSheet(m.bid), confirm: confirmSheet, legal: () => legalSheet(m.which), salesopts: salesOptsSheet,
+      reorder: () => reorderSheet(m.oid), password: passwordSheet, taxreq: () => taxReqSheet(m.oid), taxissue: () => taxIssueSheet(m.oid), bulkship: bulkShipSheet, orderview: () => orderViewSheet(m.oid) };
+    const inner = SHEETS[m.type] ? SHEETS[m.type]() : '';
+    html += `<div class="scrim ${state.modalShown === m ? '' : 'enter'}" data-act="scrim">${inner}</div>`;
+    state.modalShown = m;   // 같은 창을 다시 그릴 때는 열림 효과를 반복하지 않는다
+  } else state.modalShown = null;
+  if (state.busy) html += '<div class="busybar" role="progressbar" aria-label="저장 중"></div>';
+  app.innerHTML = html;
+  document.body.style.overflow = state.modal || state.navOpen ? 'hidden' : '';
+  drawCharts();
+  rollNumbers();
+  if (state.notifyNext) { showNotify(state.notifyNext); state.notifyNext = null; }
+  if (state.copyFallback) { const ta = document.getElementById('fallback-' + state.copyFallback.bid); if (ta) { ta.focus(); ta.select(); } }
+}
+function bigPill(text) { const d = document.createElement('div'); d.className = 'bigpill'; d.setAttribute('role', 'status'); d.innerHTML = `<span>${esc(text)}</span>`; document.body.appendChild(d); setTimeout(() => d.remove(), 1500); }
+function showNotify(n) { document.querySelectorAll('.notify').forEach((x) => x.remove()); const d = document.createElement('div'); d.className = 'notify'; d.setAttribute('role', 'status');
+  d.innerHTML = `<span class="ic">${ICON.box}</span><div><b>${esc(n.title)}</b><p>${esc(n.text)}</p></div><button class="iconbtn" aria-label="알림 닫기">×</button>`; d.querySelector('button').onclick = () => d.remove(); document.body.appendChild(d); setTimeout(() => d.remove(), 5000); }
+// 장바구니가 어디서 채워졌는지(재주문 경로 비율, G-13)
+// 재주문 경로 = 지난 주문 다시 담기 + 자주 주문한 상품에서 담기 (G-13 '재주문·즐겨찾기로 들어온 비율')
+const cartSource = () => { const f = state.cartFrom || {}; const re = f.reorder || f.frequent; return re && f.catalog ? 'mixed' : re ? 'reorder' : f.catalog ? 'catalog' : 'unknown'; };
+function go(page, param) {
+  if (page === 'checkout' && state.page !== 'checkout') track('Checkout Started', { lines: Object.keys(state.cart).length, boxes: cartCount(), source: cartSource() });
+  state.page = page || ''; state.param = param || ''; state.copyFallback = null; state.navOpen = false; state.acctOpen = false; if (page !== 'mynotices') state.noticeId = null; render(); window.scrollTo(0, 0); }
+
+/* ---------- 동작 ---------- */
+function act(fn, okMsg, after, fail) {
+  pendingOps = [];
+  try { fn(); }
+  catch (e) { pendingOps = []; const m = e instanceof ApiError ? e.message : '처리 중 오류가 났습니다. 다시 시도해 주세요.'; if (!(e instanceof ApiError)) console.error(e); toast(m); if (fail) fail(m); return; }
+  if (!LIVE) { save(); if (after) after(); if (okMsg) toast(okMsg); render(); return; }
+  const ops = pendingOps; pendingOps = [];
+  render();   // 화면에는 먼저 반영
+  if (!ops.length) { if (after) after(); if (okMsg) toast(okMsg); return; }
+  state.busy++; render();
+  (async () => {
+    let ok = true;
+    try { for (const op of ops) await op(); } catch (e) { ok = false; console.error(e); toast(liveErrorText(e)); if (fail) fail(liveErrorText(e)); }
+    try { db = await Live.load(); } catch (e) { console.error(e); if (ok) toast('저장은 됐지만 새로 불러오지 못했습니다. 새로고침해 주세요.'); }
+    state.busy = Math.max(0, state.busy - 1);
+    if (ok) { if (after) after(); if (okMsg) toast(okMsg); }
+    render();
+  })();
+}
+async function liveRun(task, okMsg) {   // 화면 엔진에 없는 서버 전용 동작 (역할 지정 등)
+  state.busy++; render();
+  try { await task(); db = await Live.load(); if (okMsg) toast(okMsg); }
+  catch (e) { console.error(e); toast(liveErrorText(e)); }
+  state.busy = Math.max(0, state.busy - 1); render();
+}
+function copyText(text, onFail) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { onFail(); return null; }
+    return navigator.clipboard.writeText(text).then(() => true, () => { onFail(); return false; });
+  } catch (e) { onFail(); return null; }
+}
+function selectNode(el) { try { const r = document.createRange(); r.selectNodeContents(el); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } catch (e) {} }
+/** 지난 주문을 장바구니에 담기 (현재 계약가). replace면 장바구니를 비우고 담는다. */
+function fillFromOrder(o, replace, from) {
+  const prods = api().listProducts(); let n = 0, boxes = 0;
+  if (replace) { state.cart = {}; state.cartFrom = {}; }
+  for (const i of o.items) { const p = prods.find((x) => x.id === i.product_id); if (!p || (p.options.length && !p.options.some((x) => x.id === i.option_id))) continue;
+    const opt = p.options.length ? i.option_id : null; const key = p.id + '|' + (opt || '');
+    state.cart[key] = { product_id: p.id, option_id: opt, qty: (state.cart[key] ? state.cart[key].qty : 0) + i.qty_boxes }; n++; boxes += i.qty_boxes; }
+  state.cartFrom = { ...(state.cartFrom || {}), reorder: 1 }; track('Reorder Started', { from, lines: n, boxes, mode: replace ? 'replace' : 'add' });
+  state.modal = null; go('cart'); toast(`${n}개 품목 · ${boxes}박스를 현재 가격으로 담았습니다.`);
+}
+const actions = {
+  login: (t) => { state.uid = t.dataset.uid; state.cart = {}; state.virtual = false; save(); go(''); },
+  logout: () => {
+    if (LIVE) { state.acctOpen = false; Obs.flush().catch(() => {}).then(() => Live.client.auth.signOut()).finally(() => { db = null; state.uid = null; state.cart = {}; state.notifyNext = null; state.liveView = 'login'; state.page = ''; document.querySelectorAll('.notify').forEach((x) => x.remove()); render(); }); return; }
+    state.uid = null; state.cart = {}; save(); go('');
+  },
+  authtab: (t) => { state.authTab = t.dataset.v; render(); },
+  home: () => go(''),
+  nav: (t) => go(t.dataset.p),
+  acct: () => { state.acctOpen = !state.acctOpen; render(); },
+  navopen: () => { state.navOpen = true; render(); },
+  navclose: () => { state.navOpen = false; render(); },
+  month: (t) => { state.base = addMonths(state.base, Number(t.dataset.d)); render(); },
+  period: (t) => { state.n = Number(t.dataset.v); render(); },
+  view: (t) => { state.view = t.dataset.v; render(); },
+  cumul: (t) => { state.cumul = t.dataset.v === '1'; render(); },
+  virtual: (t) => { state.virtual = t.dataset.v === '1'; if (state.virtual && state.base > '2026-09') state.base = '2026-09'; render(); },
+  share: (t) => {
+    const bid = t.dataset.b; const inv = guard(() => api().getInvite(bid)); if (!inv || inv.__error) return toast('코드를 불러오지 못했습니다.');
+    const p = copyText(inv.share_text, () => { state.copyFallback = { bid }; render(); });
+    if (p) p.then((ok) => { if (ok) { if (state.copyFallback) { state.copyFallback = null; render(); } toast('안내문을 복사했습니다. 카카오톡에 붙여넣으세요.'); } });
+  },
+  copytrack: (t) => {
+    const o = guard(() => api().getOrder(t.dataset.o)); if (!o || o.__error || !o.shipment) return;
+    const p = copyText(o.shipment.tracking_no, () => { const el = document.getElementById('trk-' + o.id); if (el) selectNode(el); toast('송장번호가 선택되었습니다. 길게 눌러 복사해 주세요.'); });
+    if (p) p.then((ok) => { if (ok) toast('송장번호를 복사했습니다.'); });
+  },
+  reissue: (t) => act(() => api().reissueInvite(t.dataset.b), '새 코드를 발급했습니다. 이전 코드는 더 이상 쓸 수 없습니다.'),
+  cat: (t) => { state.shopCat = t.dataset.c; render(); },
+  openp: (t) => { state.modal = { type: 'product', pid: t.dataset.p, qty: 1 }; render(); },
+  close: () => { state.modal = null; render(); },
+  scrim: (t, e) => { if (e.target === t) { state.modal = null; render(); } },
+  sheetqty: (t) => { keepOpt(); state.modal.qty = Math.max(1, (state.modal.qty || 1) + Number(t.dataset.d)); render(); },
+  cartqty: (t) => { const l = state.cart[t.dataset.k]; l.qty = Math.max(1, l.qty + Number(t.dataset.d)); render(); },
+  cartdel: (t) => { delete state.cart[t.dataset.k]; render(); },
+  opennotice: (t) => { state.noticeId = t.dataset.n; state.page = 'mynotices'; render(); window.scrollTo(0, 0); },
+  noticeback: () => { state.noticeId = null; render(); },
+  dismissnotice: (t) => { state.dismissed = t.dataset.n; savePref('dismissed', t.dataset.n); render(); },
+  legal: (t) => { state.modal = { type: 'legal', which: t.dataset.v }; render(); },
+  paid: (t) => act(() => api().confirmPayment(t.dataset.o), '결제를 확인했습니다. 이제 배송 준비를 할 수 있습니다.'),
+  deliver: (t) => { act(() => api().deliver(t.dataset.o), '배송 완료로 바꿨습니다.'); bigPill('배송 완료'); },
+  moreorders: () => { state.orderLimit += 50; render(); },
+  resetorders: () => { state.of = { brand: '', quick: '', q: '', period: '' }; state.orderLimit = 50; render(); },
+  goto: (t) => { const p = t.dataset.p, v = t.dataset.v; if (p === 'orders') { state.of = { brand: '', quick: v, q: '', period: '' }; state.orderLimit = 50; } if (p === 'taxinvoices') state.taxFilter = v; go(p); },
+  pwchange: () => { state.acctOpen = false; state.modal = { type: 'password' }; render(); },
+  ofquick: (t) => { state.of.quick = t.dataset.v; state.orderLimit = 50; render(); },
+  selclear: () => { state.sel = {}; render(); },
+  bulkst: (t) => { const ids = Object.keys(state.sel); let r; act(() => { r = api().bulkStatus(ids, t.dataset.v); }, null,
+    () => { state.sel = {}; toast(`${r.changed}건을 '${STATUS[t.dataset.v][0]}'(으)로 바꿨습니다.${r.skipped ? ` ${r.skipped}건은 단계가 맞지 않아 건너뛰었습니다.` : ''}`); }); },
+  prep1: (t) => act(() => api().bulkStatus([t.dataset.o], 'preparing'), '배송 준비로 바꿨습니다.'),
+  bulkship: () => { state.modal = { type: 'bulkship' }; render(); },
+  bulkback: () => { state.modal.rows = null; render(); },
+  bulksave: () => { const ok = reviewTracking(state.modal.rows).filter((r) => !r.err).map((r) => ({ no: r.no, carrier: r.carrier, tracking_no: r.tracking_no })); let res = [];
+    act(() => { res = api().bulkShip(ok); }, null, () => { state.modal = null; state.sel = {}; const n = res.filter((x) => x.ok).length; toast(`송장 ${n}건을 저장했습니다.${res.length - n ? ` ${res.length - n}건은 저장하지 못했습니다.` : ''} 점주 화면에 바로 보입니다.`); }); },
+  staffopen: (t) => { state.modal = { type: 'orderview', oid: t.dataset.o }; render(); },
+  csvorders: () => ordersCsv(api()),
+  csvboxes: () => { const rows = api().boxesReport(state.boxesMonth, state.virtual); const prods = db.products.filter((p) => rows.some((r) => r.boxes[p.id]));
+    downloadCsv(`품목별박스_${state.boxesMonth}.csv`, ['품목', '입수량', ...rows.map((r) => r.brand_name), '합계'], prods.map((p) => [p.name, p.pack_qty || '', ...rows.map((r) => r.boxes[p.id] || 0), rows.reduce((s, r) => s + (r.boxes[p.id] || 0), 0)])); },
+  csvsettle: () => { const rows = api().settlement(state.settleMonth, state.virtual);
+    downloadCsv(`페이백정산_${state.settleMonth}.csv`, ['브랜드', '방식', '정산 대상 매출', '마감월 조정', '페이백', '부가세', '합계', '마감'], rows.map((r) => [r.brand_name, r.rule ? (r.rule.method === 'A' ? `A ${r.rule.rate}%` : 'B 박스당') : '미설정', r.amount, r.adjustments || 0, r.payback, r.payback_vat, r.payback + r.payback_vat, r.closed ? '마감' : ''])); },
+  taxfilter: (t) => { state.taxFilter = t.dataset.v; render(); },
+  taxissue: (t) => { state.modal = { type: 'taxissue', oid: t.dataset.o }; render(); },
+  paymonth: (t) => { state.payMonth = t.dataset.v; render(); },
+  cardqty: (t) => { const k = t.dataset.k; state.cardQty[k] = Math.max(1, (state.cardQty[k] || 1) + Number(t.dataset.d)); render(); },
+  cardadd: (t) => {
+    const p = api().listProducts().find((x) => x.id === t.dataset.p); if (!p) return;
+    const opt = p.options.length ? (state.cardOpt[p.id] && p.options.some((o) => o.id === state.cardOpt[p.id]) ? state.cardOpt[p.id] : p.options[0].id) : null;
+    const qty = state.cardQty[p.id] || 1; const key = p.id + '|' + (opt || '');
+    state.cart[key] = { product_id: p.id, option_id: opt, qty: (state.cart[key] ? state.cart[key].qty : 0) + qty };
+    state.cardQty[p.id] = state.cardDefault[p.id] || 1; const freq = !!state.cardDefault[p.id];
+    state.cartFrom = { ...(state.cartFrom || {}), [freq ? 'frequent' : 'catalog']: 1 }; track('Product Added', { source: freq ? 'frequent' : 'catalog', qty });
+    render(); toast(`${p.name}${opt ? ` (${(p.options.find((o) => o.id === opt) || {}).name})` : ''} · ${qty}박스를 담았습니다.`);
+  },
+  openorder: (t) => go('order', t.dataset.o),
+  myfilter: (t) => { state.myFilter = t.dataset.v; render(); },
+  copyno: (t) => { const o = guard(() => api().getOrder(t.dataset.o)); if (!o || o.__error) return; copyOr(o.no, 'ono-' + o.id, '주문번호를 복사했습니다.'); },
+  copybank: (t) => { const acc = api().publicInfo().bank_account; copyOr(acc, 'bank-' + t.dataset.o, '계좌번호를 복사했습니다.'); },
+  reorder: (t) => { state.modal = { type: 'reorder', oid: t.dataset.o }; render(); },
+  reordermode: (t) => { state.modal.mode = t.dataset.v; render(); },
+  quickreorder: (t) => {
+    const a = api(); const o = a.getOrder(t.dataset.o); const c = reorderCheck(o, a.listProducts());
+    if (c.gone || c.changed || Object.keys(state.cart).length) { state.modal = { type: 'reorder', oid: o.id }; render(); return; }   // 확인할 게 있으면 보여 주고
+    fillFromOrder(o, false, 'home');                                                                                                   // 아니면 바로 담기 (탭 하나 줄임, G-14)
+  },
+  doreorder: (t) => { const o = api().getOrder(t.dataset.o); fillFromOrder(o, state.modal && state.modal.mode === 'replace', state.page || 'shop'); },
+  askmycancel: (t) => { const o = db.orders.find((x) => x.id === t.dataset.o); state.confirm = { title: `${o.no} 주문을 취소할까요?`, text: '입금 전 주문이라 바로 취소됩니다. 담았던 상품은 다시 담기로 언제든 주문할 수 있어요.', ok: '주문 취소', run: () => api().cancelMyOrder(o.id) }; state.modal = { type: 'confirm' }; render(); },
+  askclearcart: () => { state.confirm = { title: '장바구니를 비울까요?', text: `담아둔 ${cartCount()}박스가 삭제됩니다. 이미 접수한 주문은 바뀌지 않습니다.`, ok: '비우기', run: () => { state.cart = {}; state.cartFrom = {}; } }; state.modal = { type: 'confirm' }; render(); },
+  lastship: () => { const d = lastShipTo(api()); if (!d) return toast('이전 주문 배송지가 없습니다.'); keepPayDraft(); state.shipDraft = d; render(); toast('최근 배송지를 불러왔습니다.'); },
+  storeship: () => { keepPayDraft(); state.shipDraft = storeShipTo(api().me()); render(); },
+  taxreq: (t) => { state.modal = { type: 'taxreq', oid: t.dataset.o }; render(); },
+  askcancel: (t) => { const o = db.orders.find((x) => x.id === t.dataset.o); state.confirm = { title: `${o.no} 취소·환불`, text: '결제된 주문이면 원래 주문한 달 매출에서 차감합니다. 그 달이 이미 마감됐다면 마감 숫자는 그대로 두고 이번 달에 조정 항목으로 넣습니다.', ok: '취소·환불하기', run: () => api().cancelOrder(o.id, '운영자 처리') }; state.modal = { type: 'confirm' }; render(); },
+  askclose: (t) => { const b = db.brands.find((x) => x.id === t.dataset.b); state.confirm = { title: `${b.name} ${monthLabel(state.settleMonth)} 마감`, text: '마감하면 이 달의 매출·박스·페이백이 고정됩니다. 이후 가격·기준을 바꾸거나 반품이 들어와도 이 숫자는 바뀌지 않습니다.', ok: '마감하기', run: () => api().closeMonth(b.id, state.settleMonth, state.virtual) }; state.modal = { type: 'confirm' }; render(); },
+  askreset: () => { state.confirm = { title: '처음 상태로 되돌리기', text: '이 브라우저에 저장된 주문·가입·설정이 모두 지워지고 7월 시트와 가상 데이터만 남습니다.', ok: '되돌리기', run: () => { db = normalize(seed()); state.qa = null; } }; state.modal = { type: 'confirm' }; render(); },
+  doconfirm: () => { const c = state.confirm; state.modal = null; state.confirm = null; act(c.run, '처리했습니다.'); },
+  editrule: (t) => { state.modal = { type: 'rule', bid: t.dataset.b }; render(); },
+  editp: (t) => { state.modal = { type: 'editp', pid: t.dataset.p || null }; render(); },
+  addopt: () => { const box = document.getElementById('opt-rows'); box.insertAdjacentHTML('beforeend', optRow({}, box.children.length)); const ins = box.querySelectorAll('input'); ins[ins.length - 1].focus(); },
+  delopt: (t) => { const box = t.closest('#opt-rows'); t.closest('.optrow').remove(); box.querySelectorAll('.n').forEach((n, i) => (n.textContent = i + 1)); },
+  pimgdel: () => { keepProductForm(); state.modal.image = null; render(); },
+  addadmin: (t) => act(() => api().addAdmin(t.dataset.b), '관리자 계정을 만들었습니다. 계정 메뉴의 시험 계정 전환에서 들어가 볼 수 있습니다.'),
+  reload: () => liveRun(async () => {}, '새로 불러왔습니다.'),
+  delnotice: (t) => act(() => api().deleteNotice(t.dataset.n), '공지를 삭제했습니다.'),
+  runqa: () => { state.qa = runQA(); render(); },
+  replay: () => { state.replay = true; state.rollPrev = {}; render(); },
+  salesopts: () => { state.modal = { type: 'salesopts' }; render(); },
+  clearq: () => { state.shopQ = ''; render(); },
+  resetshop: () => { state.shopQ = ''; state.shopCat = 'all'; render(); },
+};
+function keepShipDraft() { const f = document.querySelector('form[data-form="checkout"]'); if (!f) return; state.shipDraft = Object.fromEntries(['name', 'phone', 'zip', 'addr1', 'addr2', 'memo'].map((k) => [k, f.elements[k].value])); }
+function keepPayDraft() { const f = document.querySelector('form[data-form="checkout"]'); if (!f) return; const c = f.querySelector('input[name="pay"]:checked'); if (c) state.payDraft = c.value; }
+function copyOr(text, nodeId, okMsg) {
+  if (!text) return;
+  const p = copyText(text, () => { const el = document.getElementById(nodeId); if (el) selectNode(el); toast('선택되었습니다. 길게 눌러 복사해 주세요.'); });
+  if (p) p.then((ok) => { if (ok) toast(okMsg); });
+}
+/** datetime-local(한국 시간으로 입력) → ISO */
+const kstLocalToISO = (v) => (v ? new Date(`${v}${v.length === 16 ? ':00' : ''}+09:00`).toISOString() : '');
+function keepOpt() { const sel = document.querySelector('.sheet input[name="opt"]:checked'); if (sel) state.modal.opt = sel.value; }
+function keepProductForm() {   // 이미지를 바꿀 때 입력 중이던 값이 사라지지 않게
+  const f = document.querySelector('form[data-form="product"]'); if (!f) return;
+  state.modal.draft = { code: f.elements.code.value, name: f.elements.name.value, category_id: f.elements.category_id.value, pack_qty: f.elements.pack_qty.value, active: f.elements.active.checked,
+    options: [...f.querySelectorAll('#opt-rows input')].map((i) => ({ id: i.dataset.oid || null, name: i.value })) };
+}
+document.addEventListener('click', (e) => {
+  const tr = e.target.closest('a[data-track]'); if (tr) track(tr.dataset.track, { carrier: tr.dataset.carrier || '' });   // 밖으로 나가는 링크 기록
+  const t = e.target.closest('[data-act]');
+  if (state.acctOpen && !e.target.closest('.acct')) { state.acctOpen = false; if (!t) { render(); return; } }
+  if (!t) return;
+  const fn = actions[t.dataset.act]; if (!fn) return;
+  if (t.tagName === 'BUTTON' && t.type !== 'submit') e.preventDefault();
+  fn(t, e);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (state.modal || state.navOpen || state.acctOpen)) { state.modal = null; state.navOpen = false; state.acctOpen = false; render(); } });
+const changes = {
+  switch: (el) => { state.uid = el.value; state.cart = {}; state.virtual = false; state.acctOpen = false; save(); go(''); },
+  scope: (el) => { state.scope = el.value; const keep = state.modal; state.page = 'sales'; state.param = el.value === 'all' ? '' : el.value; state.modal = keep; render(); },
+  basemonth: (el) => { if (el.value) { state.base = el.value; render(); } },
+  sort: (el) => { state.shopSort = el.value; render(); },
+  boxesMonth: (el) => { if (el.value) { state.boxesMonth = el.value; render(); } },
+  settleMonth: (el) => { if (el.value) { state.settleMonth = el.value; render(); } },
+  ofbrand: (el) => { state.of.brand = el.value; state.orderLimit = 50; render(); },
+  ofperiod: (el) => { state.of.period = el.value; state.orderLimit = 50; render(); },
+  selorder: (el) => { if (el.checked) state.sel[el.dataset.o] = true; else delete state.sel[el.dataset.o]; render(); },
+  selall: (el) => { const shown = staffOrderList(api()).list.slice(0, state.orderLimit); for (const o of shown) { if (el.checked) state.sel[o.id] = true; else delete state.sel[o.id]; } render(); },
+  cardopt: (el) => { state.cardOpt[el.dataset.k] = el.value; },
+  cardset: (el) => { state.cardQty[el.dataset.k] = Math.max(1, Math.floor(Number(el.value)) || 1); render(); },
+  paydraft: (el) => { keepShipDraft(); state.payDraft = el.value; render(); },
+  paybrand: (el) => { state.payBrand = el.value; state.payMonth = ''; render(); },
+  pricebrand: (el) => { state.priceBrand = el.value; render(); },
+  cartset: (el) => { const l = state.cart[el.dataset.k]; l.qty = Math.max(1, Math.floor(Number(el.value)) || 1); render(); },
+  sheetqtyset: (el) => { keepOpt(); state.modal.qty = Math.max(1, Math.floor(Number(el.value)) || 1); render(); },
+  rulemethod: (el) => { state.modal.method = el.value; render(); },
+  pimg: async (el) => { keepProductForm(); const img = await readImage(el.files[0], 800); if (img) { state.modal.image = img; render(); } else toast('이미지를 읽지 못했습니다. 다른 파일로 시도해 주세요.'); },
+};
+document.addEventListener('input', (e) => {
+  const el = e.target.closest('[data-input="shopq"]'); if (!el) return;
+  state.shopQ = el.value; const box = document.getElementById('shoplist'); if (box) box.innerHTML = shopListHtml(api().listProducts());
+});
+document.addEventListener('change', (e) => { const el = e.target.closest('[data-change]'); if (el && changes[el.dataset.change]) changes[el.dataset.change](el); });
+function readImage(file, max = 1000) {
+  return new Promise((res) => {
+    if (!file || !file.size) return res(null);
+    const fr = new FileReader(); fr.onload = () => { const img = new Image(); img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height)); const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); res(c.toDataURL('image/jpeg', 0.82)); }; img.onerror = () => res(null); img.src = fr.result; };
+    fr.onerror = () => res(null); fr.readAsDataURL(file);
+  });
+}
+const forms = {
+  apply: (f) => { const r = guard(() => makeApi(db, null).applyWithCode(f.code, f)); if (r.__error) return toast(r.__error.message); state.uid = r.user_id; save(); go(''); toast('가입 신청을 보냈습니다. 승인을 기다려 주세요.'); },
+  addcart: (f, form) => {
+    const p = api().listProducts().find((x) => x.id === f.pid); const opt = form.querySelector('input[name="opt"]:checked');
+    const qty = Math.max(1, Math.floor(Number(f.qty)) || 1); const key = f.pid + '|' + (opt ? opt.value : '');
+    state.cart[key] = { product_id: f.pid, option_id: opt ? opt.value : null, qty: (state.cart[key] ? state.cart[key].qty : 0) + qty };
+    state.cartFrom = { ...(state.cartFrom || {}), catalog: 1 }; track('Product Added', { source: 'detail', qty });
+    state.modal = null; render(); toast(`${p.name} ${qty}박스를 담았습니다.`);
+  },
+  checkout: (f, form) => {
+    const ship = { name: f.name, phone: f.phone, zip: f.zip, addr1: f.addr1, addr2: f.addr2, memo: f.memo }; state.shipDraft = ship; state.payDraft = f.pay; state.agreeDraft = !!f.agree;   // 실패해 다시 그려도 체크 유지
+    const miss = !ship.name.trim() ? 'co-name' : !ship.phone.trim() ? 'co-phone' : !ship.addr1.trim() ? 'co-addr1' : '';
+    if (miss) { const el = document.getElementById(miss); if (el) el.focus(); return toast(miss === 'co-name' ? '받는 분을 입력해 주세요.' : miss === 'co-phone' ? '연락처를 입력해 주세요.' : '배송 주소를 입력해 주세요.'); }
+    if (!f.agree) return toast('주문 내용과 이용약관 확인에 체크해 주세요.');
+    let o = null;
+    const info = { pay: f.pay, lines: Object.keys(state.cart).length, boxes: cartCount(), source: cartSource() };
+    act(() => { o = api().placeOrder(Object.values(state.cart).map((l) => ({ product_id: l.product_id, option_id: l.option_id, qty_boxes: l.qty })), f.pay, ship, state.clientKey); }, null,
+      () => { track('Order Submitted', { ...info, secs: Math.round((Date.now() - Obs.t0) / 1000), duplicate: !!(o && o.duplicate) });
+        state.cart = {}; state.cartFrom = {}; state.clientKey = null; state.shipDraft = null; state.payDraft = null; state.agreeDraft = false; state.page = 'myorders'; window.scrollTo(0, 0);
+        if (o && o.duplicate) toast('이미 접수된 주문을 찾았습니다. 중복으로 접수하지 않았습니다.');
+        else { bigPill('주문 완료'); toast(f.pay === 'bank' ? '주문을 접수했습니다. 입금이 확인되면 출고됩니다.' : '주문을 접수했습니다. 운영자가 카드 결제를 안내하고, 확인되면 출고합니다.'); } },
+      (msg) => track('Order Failed', { ...info, reason: String(msg).slice(0, 80) }));
+  },
+  ofsearch: (f) => { state.of.q = f.q || ''; state.orderLimit = 50; render(); },
+  bulkparse: (f) => { const rows = parseTracking(f.text, f.carrier); if (!rows.length) return toast('붙여넣은 줄이 없습니다. 주문번호와 송장번호를 넣어 주세요.'); Object.assign(state.modal, { rows, text: f.text, carrier: f.carrier }); render(); },
+  taxreq: (f) => act(() => api().requestTaxInvoice(f.oid, f), '세금계산서를 신청했습니다. 운영자가 발행하면 승인번호가 보입니다.', () => { state.modal = null; track('Tax Invoice Requested', {}); }),
+  taxreturn: (f) => act(() => api().returnTaxInvoice(f.oid, f.note), '보완 요청을 보냈습니다. 점주 화면에 사유가 보입니다.'),
+  taxissue: (f) => act(() => api().issueTaxInvoice(f.oid, f), '발행 완료로 기록했습니다.', () => { state.modal = null; }),
+  account: (f) => act(() => api().setBrandAccount(f.bid, f), '수취계좌를 저장했습니다.'),
+  payout: (f) => {
+    const b = db.brands.find((x) => x.id === f.bid); const r = api().settlement(f.month, false).find((x) => x.brand_id === f.bid);
+    const at = kstLocalToISO(f.at); if (!at) return toast('이체한 시각을 넣어 주세요.');
+    state.confirm = { title: `${b.name} ${monthLabel(f.month)} 이체 완료로 기록할까요?`, text: `${fmtExact(r.payback + r.payback_vat)}을 은행에서 이체했는지 확인해 주세요. 기록은 고칠 수 없습니다.`, ok: '확인하고 기록',
+      run: () => { api().recordPayout(f.bid, f.month, { ref: f.ref, at, memo: f.memo }); state.payMonth = ''; } };
+    state.modal = { type: 'confirm' }; render();
+  },
+  decide: (f, form, sub) => act(() => api().decideMembership(f.mid, sub && sub.value === 'approve', { store_id: f.store, reason: f.reason }), sub && sub.value === 'approve' ? '승인했습니다. 점주가 이제 주문할 수 있습니다.' : '반려했습니다.'),
+  addbrand: (f) => act(() => api().addBrand(f.name, f.admin), '브랜드를 추가하고 초대코드를 발급했습니다.'),
+  rename: (f) => act(() => api().renameBrand(f.bid, f.name), '브랜드명을 바꿨습니다. 코드·가격·매출 연결은 그대로입니다.'),
+  ship: (f) => act(() => api().ship(f.oid, f.carrier, f.tracking), '송장을 저장했습니다. 점주 화면에 바로 보입니다.'),
+  discount: (f) => act(() => api().setDiscount(f.oid, f.amount), '할인을 적용했습니다.'),
+  notice: async (f, form) => { const image = await readImage(form.querySelector('input[name="image"]').files[0]); act(() => api().createNotice({ ...f, image }), '공지를 올렸습니다.'); },
+  product: (f, form) => {
+    const options = [...form.querySelectorAll('#opt-rows input')].map((i) => ({ id: i.dataset.oid || null, name: i.value }));
+    const image = state.modal.image;   // undefined = 그대로, null = 지움
+    act(() => { api().saveProduct({ id: f.id || null, code: f.code, name: f.name, category_id: f.category_id, pack_qty: f.pack_qty, active: !!f.active, options, image }); }, '상품을 저장했습니다.', () => { state.modal = null; });
+  },
+  price: (f) => act(() => api().setPrice(state.priceBrand, f.pid, f.price, f.from), '단가를 저장했습니다. 적용 시작일부터 새 주문에 쓰입니다.'),
+  copyprices: (f) => { let n = 0; act(() => { n = api().copyPrices(f.from, state.priceBrand, f.from_date); }, null, () => toast(`${n}개 상품 단가를 복사했습니다.`)); },
+  rule: (f) => {
+    const per_box = {}; for (const k in f) if (k.startsWith('pb_')) per_box[k.slice(3)] = f[k];
+    act(() => { api().setPaybackRule(f.bid, { method: f.method, rate: f.rate, per_box, effective_from: f.from }); }, '정산 기준을 저장했습니다.', () => { state.modal = null; });
+  },
+  settings: (f) => act(() => api().saveSettings({ revenue: { basis: f.basis, include_shipping: !!f.include_shipping, include_discount: !!f.include_discount, price_includes_vat: !!f.price_includes_vat },
+    order_open: !!f.order_open, signup_open: !!f.signup_open,
+    payback_vat: !!f.payback_vat, shipping_fee: Math.max(0, Math.round(Number(f.shipping_fee) || 0)), free_shipping_over: Math.max(0, Math.round(Number(f.free_shipping_over) || 0)), site_url: f.site_url.trim(), bank_account: f.bank_account.trim(),
+    carriers: f.carriers.split(',').map((s) => s.trim()).filter(Boolean),
+    footer: { company: f.f_company.trim(), ceo: f.f_ceo.trim(), biz_no: f.f_biz_no.trim(), address: f.f_address.trim(), contact: f.f_contact.trim(), terms: f.f_terms, privacy: f.f_privacy, shipping_info: f.f_shipping_info, return_info: f.f_return_info } }), '설정을 저장했습니다.'),
+  assignadmin: (f) => act(() => api().addAdmin(f.bid, f.email.trim()), `${f.email.trim()} 계정을 관리자로 지정했습니다.`),
+  setrole: (f) => liveRun(() => Live.writes.setRole(f.email.trim(), f.role), `${f.email.trim()} 계정을 ${ROLE[f.role]}(으)로 지정했습니다.`),
+  login: (f) => liveLogin(f.email, f.password),
+  pwchange: (f) => { if (!pwCheck(f)) return; state.modal = null; liveRun(() => Live.writes.changePassword(f.pw), '비밀번호를 바꿨습니다. 다음 로그인부터 새 비밀번호를 쓰세요.'); },
+  pwreset: async (f) => {
+    state.busy++; render();
+    try { await Live.writes.sendReset(f.email); state.authTab = 'login'; toast('비밀번호 재설정 메일을 보냈습니다. 메일의 링크를 누르면 새 비밀번호를 정할 수 있어요.'); }
+    catch (e) { toast(liveErrorText(e)); }
+    state.busy = Math.max(0, state.busy - 1); render();
+  },
+  pwrecover: async (f) => {
+    if (!pwCheck(f)) return;
+    state.busy++; render();
+    try { await Live.writes.changePassword(f.pw); state.recovering = false; try { history.replaceState(null, '', location.pathname); } catch (e) {}
+      state.busy = Math.max(0, state.busy - 1); toast('새 비밀번호로 바꿨습니다.'); await liveEnter(Live.session); return; }
+    catch (e) { toast(liveErrorText(e)); }
+    state.busy = Math.max(0, state.busy - 1); render();
+  },
+  signup: (f) => liveSignup(f),
+  applycode: (f) => liveRun(async () => { await Live.writes.applyWithCode(f.code, { store_name: f.store_name, biz_no: f.biz_no, ceo: f.ceo, phone: f.phone, address: f.address }); track('Signup Submitted', { via: 'code' }); }, '가입 신청을 보냈습니다. 승인을 기다려 주세요.'),
+  dev: (f) => act(() => api().saveDevSettings({ deploy_target: f.deploy_target, session_hours: Number(f.session_hours) || 12, allowed_admin_ips: f.allowed_admin_ips }), '저장했습니다.'),
+};
+document.addEventListener('submit', (e) => {
+  const form = e.target.closest('form[data-form]'); if (!form) return; e.preventDefault();
+  const f = {}; new FormData(form).forEach((v, k) => { if (!(v instanceof File)) f[k] = v; });
+  forms[form.dataset.form] && forms[form.dataset.form](f, form, e.submitter);
+});
+/* ---------- 실서비스: 로그인·가입·부팅 ---------- */
+const LoadingScreen = () => `<main class="auth center"><div class="stack center-items"><span class="wordmark" style="font-size:var(--t48)">moa<i>.</i></span><p class="sub">${esc(Live.error || '불러오는 중입니다…')}</p>${Live.error ? '<button class="btn" onclick="location.reload()">다시 시도</button>' : ''}</div></main>`;
+const CodeFields = (prefix) => `<div class="field"><label for="${prefix}-code" class="label">가입 코드</label><input id="${prefix}-code" name="code" class="codeinput" autocomplete="off" autocapitalize="characters" maxlength="6" placeholder="K7M2QX" required></div>
+  ${Field(prefix + '-store', 'store_name', '상호(매장명)', 'required placeholder="예: 힙춘향마라탕 송도점"')}${Field(prefix + '-biz', 'biz_no', '사업자번호', 'required inputmode="numeric" placeholder="000-00-00000"')}
+  ${Field(prefix + '-ceo', 'ceo', '대표자명', 'required')}${Field(prefix + '-phone', 'phone', '연락처', 'required inputmode="tel" placeholder="010-0000-0000"')}${Field(prefix + '-addr', 'address', '매장 주소', 'required')}`;
+function renderLiveLogin() {
+  if (state.liveView === 'recover') return `<main class="auth"><div class="title"><span class="wordmark">moa<i>.</i></span><h1>새 비밀번호 정하기</h1><p class="sub">메일 링크로 들어오셨습니다. 앞으로 쓸 비밀번호를 정해 주세요.</p></div>
+    <section class="stack"><form data-form="pwrecover" class="stack">${PwFields('rc')}<button class="btn lg block" type="submit">비밀번호 저장하고 들어가기</button></form></section></main>${state.busy ? '<div class="busybar" role="progressbar" aria-label="처리 중"></div>' : ''}`;
+  if (state.authTab === 'reset') return `<main class="auth"><div class="title"><span class="wordmark">moa<i>.</i></span><h1>비밀번호 찾기</h1><p class="sub">가입한 이메일로 비밀번호를 다시 정하는 링크를 보내 드립니다.</p></div>
+    <section class="stack"><form data-form="pwreset" class="stack">${Field('rs-email', 'email', '가입한 이메일', 'type="email" required autocomplete="email"')}<button class="btn lg block" type="submit">재설정 메일 보내기</button></form>
+      <button class="textbtn" data-act="authtab" data-v="login">← 로그인으로</button></section></main>${state.busy ? '<div class="busybar" role="progressbar" aria-label="처리 중"></div>' : ''}`;
+  const tab = state.authTab;
+  return `<main class="auth"><div class="title"><span class="wordmark">moa<i>.</i></span><h1>가맹점 전용 주문몰</h1><p class="sub">승인받은 가맹점은 자기 브랜드의 계약 단가로 용기·수저·봉투를 박스 단위로 주문합니다.</p></div>
+    <div class="seg wide" role="group" aria-label="로그인 또는 가입" style="--n:2;--i:${tab === 'signup' ? 1 : 0}"><button data-act="authtab" data-v="login" aria-pressed="${tab !== 'signup'}">로그인</button><button data-act="authtab" data-v="signup" aria-pressed="${tab === 'signup'}">가입 신청</button></div>
+    ${tab === 'signup' ? `<section class="stack">${Live.pub && Live.pub.signup_open === false ? '<p class="note warn">지금은 가입 신청을 받지 않습니다. 본사에 문의해 주세요.</p>' : ''}<p class="hint">본사에서 카카오톡으로 받은 가입 코드가 필요합니다. 신청 후 운영자가 소속을 확인하면 주문할 수 있습니다.</p>
+      <form data-form="signup" class="stack">${Field('su-email', 'email', '이메일 (로그인 아이디)', 'type="email" required autocomplete="email"')}${Field('su-pw', 'password', '비밀번호 (8자 이상)', 'type="password" required minlength="8" autocomplete="new-password"')}
+      ${CodeFields('su')}<button class="btn lg block" type="submit">가입 신청</button></form></section>`
+    : `<section class="stack"><form data-form="login" class="stack">${Field('li-email', 'email', '이메일', 'type="email" required autocomplete="email"')}${Field('li-pw', 'password', '비밀번호', 'type="password" required autocomplete="current-password"')}
+      <button class="btn lg block" type="submit">로그인</button></form><button class="textbtn start" data-act="authtab" data-v="reset">비밀번호를 잊으셨나요?</button><p class="hint">계정이 없으면 "가입 신청"에서 본사가 보낸 가입 코드로 신청해 주세요.</p></section>`}
+  </main>${state.busy ? '<div class="busybar" role="progressbar" aria-label="처리 중"></div>' : ''}`;
+}
+async function liveEnter(session) {
+  Live.session = session; Live.profile = null; Live.error = null;
+  state.notifyNext = null; document.querySelectorAll('.notify,.toast').forEach((x) => x.remove());
+  state.liveView = 'boot'; render();
+  try {
+    const prof = await Live.loadProfile();
+    // 메일 인증 후 첫 로그인: 가입할 때 적은 신청서를 이어서 보낸다
+    const pendingKey = 'pending-apply:' + (session.user.email || '').toLowerCase();
+    const pending = loadPref(pendingKey);
+    if (pending && prof && prof.role === 'owner') {
+      try { const p = JSON.parse(pending); await Live.writes.applyWithCode(p.code, p.info); toast('가입 신청을 보냈습니다. 승인을 기다려 주세요.'); } catch (e) { toast(liveErrorText(e)); }
+      try { localStorage.removeItem(STORE_KEY + ':' + pendingKey); } catch (e) {}
+    }
+    db = await Live.load();
+    state.uid = session.user.id; state.liveView = 'app';
+    if (Obs.opened !== session.user.id) { Obs.opened = session.user.id; const ua = navigator.userAgent || '';
+      track('App Opened', { source: /source=pwa/.test(location.search) || Obs.standalone() ? 'pwa' : /KAKAOTALK/i.test(ua) ? 'kakao' : 'browser', role: (prof && prof.role) || '' }); }
+  } catch (e) { console.error(e); Live.error = liveErrorText(e); state.liveView = 'boot'; }
+  render();
+}
+async function liveLogin(email, password) {
+  state.busy++; render();
+  const { data, error } = await Live.client.auth.signInWithPassword({ email: String(email).trim(), password });
+  state.busy = Math.max(0, state.busy - 1);
+  if (error) { render(); toast(liveErrorText(error)); return; }
+  await liveEnter(data.session);
+}
+async function liveSignup(f) {
+  const info = { store_name: f.store_name, biz_no: f.biz_no, ceo: f.ceo, phone: f.phone, address: f.address };
+  const code = String(f.code || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{6}$/.test(code)) return toast('가입 코드 6자리를 확인해 주세요.');
+  if (String(f.password || '').length < PW_MIN) return toast(`비밀번호는 ${PW_MIN}자 이상으로 정해 주세요.`);
+  state.busy++; render();
+  const { data, error } = await Live.client.auth.signUp({ email: String(f.email).trim(), password: f.password, options: { data: { name: `${f.store_name} 점주` } } });
+  state.busy = Math.max(0, state.busy - 1);
+  if (error) { render(); toast(liveErrorText(error)); return; }
+  savePref('pending-apply:' + String(f.email).trim().toLowerCase(), JSON.stringify({ code, info }));
+  track('Signup Submitted', { via: 'signup', session: !!data.session });
+  if (data.session) { await liveEnter(data.session); return; }
+  state.authTab = 'login'; render();
+  toast('인증 메일을 보냈습니다. 메일의 링크를 누른 뒤 로그인하면 가입 신청이 이어집니다.');
+}
+async function boot() {
+  if (!LIVE) { render(); return; }
+  state.recovering = /type=recovery/.test(location.hash || '');   // 비밀번호 재설정 메일 링크로 들어옴
+  render();
+  if (!Live.init()) { render(); return; }
+  Live.client.auth.onAuthStateChange((event, sess) => {
+    if (event === 'SIGNED_OUT') { db = null; state.uid = null; state.liveView = 'login'; render(); }
+    if ((event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') && sess && Live.session) Live.session = sess;   // 기록 전송용 최신 토큰
+    if (event === 'PASSWORD_RECOVERY') { state.recovering = true; Live.session = sess; state.liveView = 'recover'; render(); }
+  });
+  Live.rpc('get_public_settings').then((p) => { Live.pub = p; if (state.liveView === 'login') render(); }).catch(() => {});
+  let session = null;
+  try { const { data } = await Live.client.auth.getSession(); session = data && data.session; } catch (e) { console.error(e); }
+  if (session && state.recovering) { Live.session = session; state.liveView = 'recover'; render(); }
+  else if (session) await liveEnter(session);
+  else { state.liveView = 'login'; render(); }
+  document.addEventListener('visibilitychange', () => {   // 다른 앱 갔다 오면 새 주문·승인 반영
+    if (document.visibilityState === 'visible' && state.liveView === 'app' && !state.busy && Date.now() - Live.lastLoad > 60000)
+      Live.load().then((d) => { db = d; if (!state.modal) render(); }).catch(() => {});
+  });
+}
+boot();
