@@ -106,6 +106,9 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+// 자막을 받아 오는 서버 기능(Supabase). KEY는 공개용 키라서 화면 코드에 있어도 괜찮다.
+const API = "https://ownarhjgryafrgoouirs.supabase.co/functions/v1/yt-transcript";
+const KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im93bmFyaGpncnlhZnJnb291aXJzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0OTUzNTAsImV4cCI6MjEwNzA3MTM1MH0.wf_-9DQMD5I1g55DSm4I_BpYieSHmB-Fpz_UsSD9ndk";
 let data = null;
 
 function videoId(input) {
@@ -168,7 +171,7 @@ async function load(id, lang) {
   try {
     const q = new URLSearchParams({ v: id });
     if (lang) q.set("lang", lang);
-    const res = await fetch("/api/transcript?" + q);
+    const res = await fetch(API + "?" + q, { headers: { Authorization: "Bearer " + KEY, apikey: KEY } });
     const body = await res.json().catch(() => null);
     if (!res.ok || !body || body.error) {
       throw new Error((body && body.message) || "대본을 가져오지 못했어요. 잠시 뒤에 다시 해 보세요.");
