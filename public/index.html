@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>대본 복사</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="대본 복사">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f6f3ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15171a" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23c8442f'/%3E%3Cpath d='M18 22h28M18 32h28M18 42h18' stroke='%23fff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f6f3ec; --card: #ffffff; --ink: #1d1c1a; --sub: #6d6a63;
+    --line: #e2ddd1; --accent: #c8442f; --accent-ink: #ffffff; --ok: #2f7d4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a; --card: #1f2226; --ink: #ecebe7; --sub: #9a9890;
+      --line: #32363c; --accent: #e2604a; --accent-ink: #ffffff; --ok: #5fbf85;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif;
+    font-size: 16px; line-height: 1.6;
+    padding: calc(env(safe-area-inset-top) + 20px) 16px calc(env(safe-area-inset-bottom) + 110px);
+    max-width: 680px; margin: 0 auto;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .lead { color: var(--sub); margin: 0 0 18px; font-size: 15px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+  label.field { display: block; font-size: 13px; color: var(--sub); margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; }
+  input[type=url] {
+    flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 12px; padding: 12px;
+  }
+  input[type=url]:focus-visible, button:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 12px; padding: 12px 16px;
+    cursor: pointer; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:disabled { opacity: .55; cursor: default; }
+  #go { width: 100%; margin-top: 10px; padding: 14px; font-size: 17px; }
+  #msg { margin: 14px 2px 0; font-size: 15px; color: var(--sub); min-height: 1.6em; }
+  #msg.err { color: var(--accent); }
+  #result { margin-top: 18px; display: none; }
+  #title { font-size: 18px; font-weight: 700; margin: 0; line-height: 1.4; overflow-wrap: anywhere; }
+  #meta { color: var(--sub); font-size: 13px; margin: 4px 0 12px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .opts label { font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  .opts input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
+  select {
+    font: inherit; font-size: 14px; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; max-width: 190px;
+  }
+  #text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 14px 0 0; font-size: 16px; line-height: 1.75; -webkit-user-select: text; user-select: text; }
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0; display: none;
+    padding: 12px 16px calc(env(safe-area-inset-bottom) + 12px);
+    background: linear-gradient(to top, var(--bg) 70%, transparent);
+  }
+  #bar .inner { max-width: 680px; margin: 0 auto; }
+  #copy { width: 100%; padding: 16px; font-size: 17px; border-radius: 14px; }
+  #copy.done { background: var(--ok); border-color: var(--ok); }
+  .tip { color: var(--sub); font-size: 13px; margin: 18px 2px 0; }
+</style>
+</head>
+<body>
+  <h1>대본 복사</h1>
+  <p class="lead">유튜브 링크를 넣으면 영상 대본을 불러와서 한 번에 복사해요.</p>
+
+  <form class="card" id="form">
+    <label class="field" for="url">유튜브 링크</label>
+    <div class="row">
+      <input id="url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://youtu.be/…">
+      <button type="button" id="paste">붙여넣기</button>
+    </div>
+    <button type="submit" class="primary" id="go">대본 가져오기</button>
+  </form>
+
+  <p id="msg" role="status" aria-live="polite"></p>
+
+  <section class="card" id="result">
+    <h2 id="title"></h2>
+    <p id="meta"></p>
+    <div class="opts">
+      <label><input type="checkbox" id="ts"> 시간 표시</label>
+      <label>자막 <select id="lang"></select></label>
+    </div>
+    <p id="text"></p>
+  </section>
+
+  <p class="tip" id="tip">아이폰에서는 사파리 공유 버튼 → “홈 화면에 추가”를 누르면 앱처럼 쓸 수 있어요.</p>
+
+  <div id="bar"><div class="inner"><button class="primary" id="copy">대본 전체 복사</button></div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let data = null;
+
+function videoId(input) {
+  const s = input.trim();
+  if (/^[\w-]{11}$/.test(s)) return s;
+  const found = s.match(/https?:\/\/\S+/);
+  let u;
+  try { u = new URL(found ? found[0] : (s.includes("://") ? s : "https://" + s)); } catch { return null; }
+  const host = u.hostname.replace(/^(www\.|m\.|music\.)/, "");
+  if (host === "youtu.be") return (u.pathname.split("/")[1] || "").slice(0, 11) || null;
+  if (host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com")) {
+    const v = u.searchParams.get("v");
+    if (v) return v.slice(0, 11);
+    const m = u.pathname.match(/^\/(shorts|live|embed|v)\/([\w-]{11})/);
+    if (m) return m[2];
+  }
+  return null;
+}
+
+function clock(sec) {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+// 시간 표시를 끄면 짧게 끊긴 자막을 읽기 좋은 문단으로 묶는다.
+function buildText() {
+  if (!data) return "";
+  if ($("ts").checked) return data.lines.map((l) => `[${clock(l.t)}] ${l.text}`).join("\n");
+  const paras = [];
+  let cur = "", last = 0;
+  for (const l of data.lines) {
+    const gap = l.t - last;
+    const endsSentence = /[.!?。…”"’)\]]$|[다요죠까네]\s*$/.test(cur);
+    if (cur && ((cur.length > 320 && endsSentence) || cur.length > 520 || gap > 8)) {
+      paras.push(cur); cur = "";
+    }
+    cur += (cur ? " " : "") + l.text;
+    last = l.t;
+  }
+  if (cur) paras.push(cur);
+  return paras.join("\n\n");
+}
+
+function render() {
+  const text = buildText();
+  $("text").textContent = text;
+  const n = text.replace(/\s/g, "").length;
+  $("meta").textContent = [data.author, `글자 ${n.toLocaleString("ko-KR")}자`].filter(Boolean).join(" · ");
+}
+
+function setMsg(text, isErr) {
+  $("msg").textContent = text;
+  $("msg").className = isErr ? "err" : "";
+}
+
+async function load(id, lang) {
+  $("go").disabled = true;
+  setMsg("대본을 가져오는 중이에요…");
+  try {
+    const q = new URLSearchParams({ v: id });
+    if (lang) q.set("lang", lang);
+    const res = await fetch("/api/transcript?" + q);
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || body.error) {
+      throw new Error((body && body.message) || "대본을 가져오지 못했어요. 잠시 뒤에 다시 해 보세요.");
+    }
+    data = body;
+    $("title").textContent = data.title || "제목 없음";
+    const sel = $("lang");
+    sel.innerHTML = "";
+    for (const t of data.tracks) {
+      const o = document.createElement("option");
+      o.value = t.code;
+      o.textContent = t.name + (t.auto && !/자동|auto/i.test(t.name) ? " (자동)" : "");
+      sel.appendChild(o);
+    }
+    sel.value = data.lang;
+    render();
+    $("result").style.display = "block";
+    $("bar").style.display = "block";
+    $("tip").style.display = "none";
+    setMsg("");
+  } catch (e) {
+    setMsg(e.message === "Failed to fetch" || e.message === "Load failed" ? "인터넷 연결을 확인해 주세요." : e.message, true);
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+$("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const id = videoId($("url").value);
+  if (!id) { setMsg("유튜브 링크가 아닌 것 같아요. 링크를 다시 확인해 주세요.", true); return; }
+  $("url").blur();
+  load(id);
+});
+
+$("paste").addEventListener("click", async () => {
+  try {
+    const t = await navigator.clipboard.readText();
+    if (t) { $("url").value = t.trim(); if (videoId(t)) $("form").requestSubmit(); }
+  } catch {
+    $("url").focus();
+    setMsg("입력칸을 길게 눌러서 붙여넣어 주세요.");
+  }
+});
+
+$("ts").addEventListener("change", () => {
+  try { localStorage.setItem("ts", $("ts").checked ? "1" : "0"); } catch {}
+  if (data) render();
+});
+$("lang").addEventListener("change", () => { if (data) load(data.videoId, $("lang").value); });
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(ta);
+  ta.select(); ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch {}
+  ta.remove();
+  return ok;
+}
+
+$("copy").addEventListener("click", async () => {
+  const ok = await copyText(buildText());
+  const b = $("copy");
+  b.textContent = ok ? "복사했어요 ✓" : "복사가 안 됐어요. 글을 길게 눌러 복사해 주세요";
+  b.classList.toggle("done", ok);
+  setTimeout(() => { b.textContent = "대본 전체 복사"; b.classList.remove("done"); }, 1800);
+});
+
+try { $("ts").checked = localStorage.getItem("ts") === "1"; } catch {}
+
+// 다른 앱에서 링크를 넘겨받은 경우(?v= 또는 ?url=) 바로 불러온다.
+const p = new URLSearchParams(location.search);
+const shared = p.get("url") || p.get("v") || p.get("text");
+if (shared) { $("url").value = shared; const id = videoId(shared); if (id) load(id); }
+</script>
+</body>
+</html>
